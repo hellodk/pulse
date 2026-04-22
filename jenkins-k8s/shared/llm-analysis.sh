@@ -123,37 +123,25 @@ curl -X POST http://192.168.1.10:11434/api/pull \
 EOF
 fi
 
-cat > llm-analysis.md <<REPORT
-# Jenkins Build Failure Analysis
-
-## Build Metadata
-
-| Field | Value |
-|---|---|
-| **Job** | ${JOB_NAME} |
-| **Build #** | ${BUILD_NUMBER} |
-| **Failed Stage** | ${FAILED_STAGE} |
-| **Timestamp** | ${TIMESTAMP} |
-
-> Mermaid diagrams in the sections below render natively in GitHub, GitLab, VS Code (with Markdown Preview Mermaid Support extension), and Obsidian.
-
----
-
-## Analysis: Qwen2.5-Coder:14B-Instruct (Ollama — 192.168.1.10:11434)
-
-$(cat "${TMP}/qwen.md")
-
----
-
-## Analysis: DeepSeek-Coder-V2-Lite-Instruct (llama.cpp — 192.168.1.24:21434)
-
-$(cat "${TMP}/deepseek.md")
-
----
-
-## Analysis: CodeLlama (Ollama — 192.168.1.10:11434)
-
-$(cat "${TMP}/codellama.md")
-REPORT
+{
+  printf '# Jenkins Build Failure Analysis\n\n'
+  printf '## Build Metadata\n\n'
+  printf '| Field | Value |\n'
+  printf '|---|---|\n'
+  printf '| **Job** | %s |\n' "${JOB_NAME}"
+  printf '| **Build #** | %s |\n' "${BUILD_NUMBER}"
+  printf '| **Failed Stage** | %s |\n' "${FAILED_STAGE}"
+  printf '| **Timestamp** | %s |\n' "${TIMESTAMP}"
+  printf '\n> Mermaid diagrams render natively in GitHub, GitLab, VS Code (Markdown Preview Mermaid Support), and Obsidian.\n\n'
+  printf -- '---\n\n'
+  printf '## Analysis: Qwen2.5-Coder:14B-Instruct (Ollama — 192.168.1.10:11434)\n\n'
+  cat "${TMP}/qwen.md"
+  printf '\n\n---\n\n'
+  printf '## Analysis: DeepSeek-Coder-V2-Lite-Instruct (llama.cpp — 192.168.1.24:21434)\n\n'
+  cat "${TMP}/deepseek.md"
+  printf '\n\n---\n\n'
+  printf '## Analysis: CodeLlama (Ollama — 192.168.1.10:11434)\n\n'
+  cat "${TMP}/codellama.md"
+} > llm-analysis.md
 
 echo "[llm-analysis] Done — written to llm-analysis.md" >&2

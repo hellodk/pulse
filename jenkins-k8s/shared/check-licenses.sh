@@ -87,7 +87,7 @@ cat > "$OUTPUT_HTML" <<HTML
 </div>
 <table>
 <tr><th>Dependency</th><th>License</th><th>Status</th></tr>
-$(echo -e "$rows")
+$(printf '%s' "$rows")
 </table>
 <hr/>
 <p style="font-size:12px;color:#666;">

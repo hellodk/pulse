@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Semgrep
-RUN pip3 install semgrep
+RUN pip3 install --no-cache-dir semgrep
 
 # OWASP Dependency-Check 9.0.9
 RUN wget -q \
@@ -27,7 +27,8 @@ ENV PATH="/opt/dependency-check/bin:$PATH"
 
 # Jenkins JNLP agent jar (for Option C)
 ARG REMOTING_VERSION=3248.3250.v3277a_8e88c9b_
-RUN curl -sL \
+RUN mkdir -p /usr/share/jenkins \
+    && curl -sL \
     "https://repo.jenkins-ci.org/releases/org/jenkins-ci/main/remoting/${REMOTING_VERSION}/remoting-${REMOTING_VERSION}.jar" \
     -o /usr/share/jenkins/agent.jar \
     && chmod 644 /usr/share/jenkins/agent.jar
