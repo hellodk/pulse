@@ -39,14 +39,14 @@ for dep in "${!DEP_LICENSE[@]}"; do
     url="${DEP_URL[$dep]}"
     class="amber"
     status="Review Required"
-    ((TOTAL++)) || true
+    TOTAL=$((TOTAL + 1))
 
-    if echo " $BLOCKED " | grep -qw " $lic "; then
-        class="red"; status="BLOCKED — Copyleft Risk"; ((BLOCKED_COUNT++)); FAIL=1
-    elif echo " $ALLOWED " | grep -qw " $lic "; then
-        class="green"; status="Allowed"; ((ALLOWED_COUNT++))
+    if echo " $BLOCKED " | grep -qF " $lic "; then
+        class="red"; status="BLOCKED — Copyleft Risk"; BLOCKED_COUNT=$((BLOCKED_COUNT + 1)); FAIL=1
+    elif echo " $ALLOWED " | grep -qF " $lic "; then
+        class="green"; status="Allowed"; ALLOWED_COUNT=$((ALLOWED_COUNT + 1))
     else
-        ((REVIEW_COUNT++))
+        REVIEW_COUNT=$((REVIEW_COUNT + 1))
     fi
 
     link="${dep}"
