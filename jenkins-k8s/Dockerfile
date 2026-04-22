@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Semgrep
-RUN pip3 install --no-cache-dir semgrep
+RUN pip3 install --no-cache-dir --break-system-packages semgrep
 
 # OWASP Dependency-Check 9.0.9
 RUN wget -q \
