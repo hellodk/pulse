@@ -26,7 +26,7 @@ spec:
         - sysctl -w vm.max_map_count=524288 && sysctl -w fs.file-max=131072
       containers:
       - name: sonarqube
-        image: sonarqube:community
+        image: sonarqube:10.4-community
         ports:
         - containerPort: 9000
         env:

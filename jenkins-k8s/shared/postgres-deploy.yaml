@@ -1,3 +1,5 @@
+# SECURITY: Replace sonar123 with a strong password before any non-local deployment.
+# For production use Sealed Secrets or an ExternalSecret referencing a vault.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -34,6 +36,9 @@ spec:
         envFrom:
         - secretRef:
             name: sonarqube-db-secret
+        env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         volumeMounts:
         - name: postgres-data
           mountPath: /var/lib/postgresql/data
@@ -49,6 +54,12 @@ spec:
             command: ["pg_isready", "-U", "sonar"]
           initialDelaySeconds: 10
           periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "sonar"]
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: postgres-data
         persistentVolumeClaim:

@@ -23,6 +23,16 @@ spec:
         env:
         - name: RELAY_NETWORKS
           value: ":10.0.0.0/8:172.16.0.0/12:192.168.0.0/16"
+        readinessProbe:
+          tcpSocket:
+            port: 25
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 25
+          initialDelaySeconds: 30
+          periodSeconds: 10
         resources:
           requests:
             memory: "64Mi"
