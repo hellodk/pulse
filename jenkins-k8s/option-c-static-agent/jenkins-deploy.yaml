@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-c
+  namespace: utilities
+  labels:
+    app: jenkins-c
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins-c
+  template:
+    metadata:
+      labels:
+        app: jenkins-c
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      initContainers:
+      - name: install-plugins
+        image: jenkins/jenkins:lts
+        command:
+        - sh
+        - -c
+        - |
+          jenkins-plugin-cli --plugins \
+            workflow-aggregator:latest \
+            git:latest \
+            sonar:latest \
+            dependency-check-jenkins-plugin:latest \
+            warnings-ng:latest \
+            htmlpublisher:latest \
+            email-ext:latest \
+            jacoco:latest \
+            pipeline-stage-view:latest
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+      containers:
+      - name: jenkins
+        image: jenkins/jenkins:lts
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 50000
+          name: jnlp
+        env:
+        - name: JAVA_OPTS
+          value: "-Djenkins.install.runSetupWizard=false"
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+        - name: init-scripts
+          mountPath: /var/jenkins_home/init.groovy.d
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "3Gi"
+            cpu: "2"
+        readinessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+      volumes:
+      - name: jenkins-home
+        persistentVolumeClaim:
+          claimName: jenkins-c-home
+      - name: init-scripts
+        configMap:
+          name: jenkins-c-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-c
+  namespace: utilities
+spec:
+  selector:
+    app: jenkins-c
+  type: NodePort
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30881
+  - name: jnlp
+    port: 50000
+    targetPort: 50000
+    nodePort: 30500

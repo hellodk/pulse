@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-c-init
+  namespace: utilities
+data:
+  01-security.groovy: |
+    import jenkins.model.*
+    import hudson.security.*
+
+    def instance = Jenkins.getInstance()
+    def realm = new HudsonPrivateSecurityRealm(false)
+    realm.createAccount("admin", "admin123")
+    instance.setSecurityRealm(realm)
+
+    def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+    strategy.setAllowAnonymousRead(false)
+    instance.setAuthorizationStrategy(strategy)
+    instance.save()
+
+  02-node.groovy: |
+    import jenkins.model.*
+    import hudson.model.*
+    import hudson.slaves.*
+
+    def instance = Jenkins.getInstance()
+    def nodeName = "android-agent"
+    if (instance.getNode(nodeName) == null) {
+      def slave = new DumbSlave(
+        nodeName,
+        "Android Build Agent — Option C static JNLP",
+        "/home/jenkins/agent",
+        "2",
+        Node.Mode.EXCLUSIVE,
+        "android-agent",
+        new JNLPLauncher(true),
+        new RetentionStrategy.Always()
+      )
+      instance.addNode(slave)
+      instance.save()
+      println "Created node: ${nodeName}"
+    } else {
+      println "Node already exists: ${nodeName}"
+    }
+
+  03-smtp.groovy: |
+    import jenkins.model.*
+    import hudson.tasks.Mailer
+
+    def desc = Jenkins.getInstance().getDescriptor("hudson.tasks.Mailer")
+    desc.setSmtpHost("smtp.utilities.svc.cluster.local")
+    desc.setSmtpPort("25")
+    desc.save()
+    println "SMTP configured"
+
+  04-sonarqube.groovy: |
+    import jenkins.model.*
+    import hudson.plugins.sonar.*
+    import hudson.plugins.sonar.model.*
+    import com.cloudbees.plugins.credentials.*
+    import com.cloudbees.plugins.credentials.domains.*
+    import org.jenkinsci.plugins.plaincredentials.impl.*
+    import hudson.util.Secret
+
+    def instance = Jenkins.getInstance()
+
+    // Add SonarQube token credential
+    def credStore = SystemCredentialsProvider.getInstance().getStore()
+    def sonarCred = new StringCredentialsImpl(
+        CredentialsScope.GLOBAL,
+        "sonar-token",
+        "SonarQube authentication token",
+        Secret.fromString("SONAR_TOKEN_HERE")
+    )
+    credStore.addCredentials(Domain.global(), sonarCred)
+
+    // Add Nexus credentials
+    def nexusCred = new UsernamePasswordCredentialsImpl(
+        CredentialsScope.GLOBAL,
+        "nexus-creds",
+        "Nexus Repository OSS credentials",
+        "admin",
+        "NEXUS_PASS_HERE"
+    )
+    credStore.addCredentials(Domain.global(), nexusCred)
+
+    // Configure SonarQube server
+    def sonarDesc = instance.getDescriptorByType(SonarGlobalConfiguration.class)
+    def sonarInstall = new SonarInstallation(
+        "SonarQube",
+        "http://sonarqube.utilities.svc.cluster.local:9000",
+        "sonar-token",
+        "", "", "", "", "", null
+    )
+    sonarDesc.setInstallations(sonarInstall)
+    sonarDesc.save()
+    println "SonarQube configured"
