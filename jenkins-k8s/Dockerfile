@@ -13,6 +13,15 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Java 21 (Temurin) — Jenkins LTS requires Java 21 for remoting
+RUN wget -qO /tmp/jdk21.tar.gz \
+    "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.6%2B7/OpenJDK21U-jdk_x64_linux_hotspot_21.0.6_7.tar.gz" \
+    && mkdir -p /opt/java/21 \
+    && tar -xzf /tmp/jdk21.tar.gz -C /opt/java/21 --strip-components=1 \
+    && rm /tmp/jdk21.tar.gz
+ENV JAVA_HOME=/opt/java/21
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
 # Semgrep
 RUN pip3 install --no-cache-dir --break-system-packages semgrep
 

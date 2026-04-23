@@ -23,11 +23,11 @@ spec:
         - -jar
         - /usr/share/jenkins/agent.jar
         - -url
-        - http://jenkins-c.utilities.svc.cluster.local:8080
-        - -name
-        - android-agent
+        - http://10.105.34.30:8080
         - -secret
         - $(JENKINS_SECRET)
+        - -name
+        - android-agent
         - -workDir
         - /home/jenkins/agent
         env:
