@@ -9,6 +9,15 @@ data:
       systemMessage: "Jenkins CI/CD — Option B (Ephemeral K8s Agents)"
       numExecutors: 0
       mode: NORMAL
+      securityRealm:
+        local:
+          allowsSignup: false
+          users:
+            - id: "admin"
+              password: "admin123"
+      authorizationStrategy:
+        loggedInUsersCanDoAnything:
+          allowAnonymousRead: false
 
       clouds:
         - kubernetes:
