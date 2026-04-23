@@ -58,12 +58,12 @@ data:
                   id: "nexus-creds"
                   scope: GLOBAL
                   username: "admin"
-                  password: "NEXUS_PASS_HERE"
+                  password: "admin123"
                   description: "Nexus Repository OSS credentials"
               - string:
                   id: "sonar-token"
                   scope: GLOBAL
-                  secret: "SONAR_TOKEN_HERE"
+                  secret: "sqa_cfe7995abde81c39e8943c221fb238fb18654b90"
                   description: "SonarQube authentication token"
 
     unclassified:

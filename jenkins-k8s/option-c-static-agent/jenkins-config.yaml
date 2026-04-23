@@ -70,7 +70,7 @@ data:
         CredentialsScope.GLOBAL,
         "sonar-token",
         "SonarQube authentication token",
-        Secret.fromString("SONAR_TOKEN_HERE")
+        Secret.fromString("sqa_cfe7995abde81c39e8943c221fb238fb18654b90")
     )
     credStore.addCredentials(Domain.global(), sonarCred)
 
@@ -80,7 +80,7 @@ data:
         "nexus-creds",
         "Nexus Repository OSS credentials",
         "admin",
-        "NEXUS_PASS_HERE"
+        "admin123"
     )
     credStore.addCredentials(Domain.global(), nexusCred)
 
