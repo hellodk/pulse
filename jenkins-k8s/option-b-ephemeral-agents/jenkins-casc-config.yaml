@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-b-casc
+  namespace: utilities
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "Jenkins CI/CD — Option B (Ephemeral K8s Agents)"
+      numExecutors: 0
+      mode: NORMAL
+
+      clouds:
+        - kubernetes:
+            name: "kubernetes"
+            serverUrl: "https://kubernetes.default.svc"
+            namespace: "utilities"
+            jenkinsUrl: "http://jenkins-b.utilities.svc.cluster.local:8080"
+            connectTimeout: 5
+            readTimeout: 15
+            containerCapStr: "10"
+            templates:
+              - name: "android-agent"
+                label: "android-agent"
+                nodeUsageMode: EXCLUSIVE
+                idleMinutes: 0
+                containers:
+                  - name: "jnlp"
+                    image: "hellodk/android-jenkins-agent:latest"
+                    workingDir: "/home/jenkins/agent"
+                    resourceRequestCpu: "1000m"
+                    resourceRequestMemory: "2048Mi"
+                    resourceLimitCpu: "2000m"
+                    resourceLimitMemory: "4096Mi"
+                    envVars:
+                      - envVar:
+                          key: "ANDROID_HOME"
+                          value: "/opt/android-sdk"
+                volumes:
+                  - emptyDirVolume:
+                      mountPath: "/root/.gradle"
+                      memory: false
+
+    credentials:
+      system:
+        domainCredentials:
+          - credentials:
+              - usernamePassword:
+                  id: "nexus-creds"
+                  scope: GLOBAL
+                  username: "admin"
+                  password: "NEXUS_PASS_HERE"
+                  description: "Nexus Repository OSS credentials"
+              - string:
+                  id: "sonar-token"
+                  scope: GLOBAL
+                  secret: "SONAR_TOKEN_HERE"
+                  description: "SonarQube authentication token"
+
+    unclassified:
+      mailer:
+        smtpHost: "smtp.utilities.svc.cluster.local"
+        smtpPort: "25"
+        replyToAddress: "jenkins@utilities.cluster.local"
+
+      sonarGlobalConfiguration:
+        buildWrapperEnabled: true
+        installations:
+          - name: "SonarQube"
+            serverUrl: "http://sonarqube.utilities.svc.cluster.local:9000"
+            credentialsId: "sonar-token"
+
+      extendedEmailPublisher:
+        defaultContentType: "text/html"
+        defaultRecipients: "hello.dk@outlook.com"
+        defaultSubject: "Jenkins Build Notification"
+        mailAccount:
+          smtpHost: "smtp.utilities.svc.cluster.local"
+          smtpPort: "25"
+
+    tool:
+      git:
+        installations:
+          - name: Default
+            home: git
