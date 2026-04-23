@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: android-build-agent
+  namespace: utilities
+  labels:
+    app: android-build-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: android-build-agent
+  template:
+    metadata:
+      labels:
+        app: android-build-agent
+    spec:
+      containers:
+      - name: agent
+        image: hellodk/android-jenkins-agent:latest
+        command:
+        - java
+        - -jar
+        - /usr/share/jenkins/agent.jar
+        - -url
+        - http://jenkins-c.utilities.svc.cluster.local:8080
+        - -name
+        - android-agent
+        - -secret
+        - $(JENKINS_SECRET)
+        - -workDir
+        - /home/jenkins/agent
+        env:
+        - name: JENKINS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: jenkins-agent-secret
+              key: JENKINS_SECRET
+        - name: ANDROID_HOME
+          value: "/opt/android-sdk"
+        volumeMounts:
+        - name: gradle-cache
+          mountPath: /root/.gradle
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+      volumes:
+      - name: gradle-cache
+        persistentVolumeClaim:
+          claimName: gradle-cache
