@@ -1,9 +1,6 @@
 # Android Agent Image
 
-Image name: android-jenkins-agent:latest
-Loaded into cluster via: k0s containerd import (`docker save android-jenkins-agent:latest | sudo k0s ctr images import -`)
-
-Full image reference in k0s containerd: `docker.io/library/android-jenkins-agent:latest`
+Image reference: `hellodk/android-jenkins-agent:latest`
 
 Use this reference in:
   - jenkins-k8s/option-b-ephemeral-agents/jenkins-casc-config.yaml (image field)
@@ -19,11 +16,11 @@ Use this reference in:
 ## Build Note
 
 The base image (thyrlian/android-sdk:latest) uses Ubuntu 24.04, which enforces PEP 668
-(externally-managed Python). The Dockerfile required `--break-system-packages` added to
-the `pip3 install semgrep` command to succeed.
+(externally-managed Python). The Dockerfile requires `--break-system-packages` on the
+`pip3 install semgrep` line to succeed.
 
-## Cluster Details
+## Push History
 
-Cluster type: k0s (not k3s)
-Container runtime: containerd 1.7.30
-Import command used: `docker save android-jenkins-agent:latest | sudo k0s ctr images import -`
+- Pushed to Docker Hub: `hellodk/android-jenkins-agent:latest`
+- Digest: sha256:181a8218a936bc2fb17e142b8e35c1254462aa307da745513615e3b33acb1007
+- Also imported into k0s containerd on control-plane node (cylon) for offline use
