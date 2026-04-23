@@ -18,29 +18,9 @@ spec:
       securityContext:
         fsGroup: 1000
         runAsUser: 1000
-      initContainers:
-      - name: install-plugins
-        image: jenkins/jenkins:lts
-        command:
-        - sh
-        - -c
-        - |
-          jenkins-plugin-cli --plugins \
-            workflow-aggregator:latest \
-            git:latest \
-            sonar:latest \
-            dependency-check-jenkins-plugin:latest \
-            warnings-ng:latest \
-            htmlpublisher:latest \
-            email-ext:latest \
-            jacoco:latest \
-            pipeline-stage-view:latest
-        volumeMounts:
-        - name: jenkins-home
-          mountPath: /var/jenkins_home
       containers:
       - name: jenkins
-        image: jenkins/jenkins:lts
+        image: hellodk/jenkins-c:latest
         ports:
         - containerPort: 8080
           name: http
