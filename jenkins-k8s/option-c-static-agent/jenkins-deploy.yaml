@@ -54,6 +54,8 @@ spec:
           mountPath: /var/jenkins_home
         - name: init-scripts
           mountPath: /var/jenkins_home/init.groovy.d
+        - name: email-templates
+          mountPath: /var/jenkins_home/email-templates
         resources:
           requests:
             memory: "1Gi"
@@ -80,6 +82,9 @@ spec:
       - name: init-scripts
         configMap:
           name: jenkins-c-init
+      - name: email-templates
+        configMap:
+          name: jenkins-email-templates
 ---
 apiVersion: v1
 kind: Service

@@ -61,6 +61,8 @@ spec:
           mountPath: /var/jenkins_home
         - name: casc-config
           mountPath: /var/jenkins_casc
+        - name: email-templates
+          mountPath: /var/jenkins_home/email-templates
         resources:
           requests:
             memory: "1Gi"
@@ -87,6 +89,9 @@ spec:
       - name: casc-config
         configMap:
           name: jenkins-b-casc
+      - name: email-templates
+        configMap:
+          name: jenkins-email-templates
 ---
 apiVersion: v1
 kind: Service
