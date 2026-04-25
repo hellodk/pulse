@@ -41,6 +41,9 @@ spec:
         volumeMounts:
         - name: gradle-cache
           mountPath: /root/.gradle
+        - name: git-repo
+          mountPath: /home/dk/Documents/git/testing-grounds
+          readOnly: true
         resources:
           requests:
             memory: "2Gi"
@@ -52,3 +55,7 @@ spec:
       - name: gradle-cache
         persistentVolumeClaim:
           claimName: gradle-cache
+      - name: git-repo
+        hostPath:
+          path: /home/dk/Documents/git/testing-grounds
+          type: Directory
