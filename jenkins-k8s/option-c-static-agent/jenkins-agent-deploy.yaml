@@ -38,6 +38,12 @@ spec:
               key: JENKINS_SECRET
         - name: ANDROID_HOME
           value: "/opt/android-sdk"
+        - name: GIT_CONFIG_COUNT
+          value: "1"
+        - name: GIT_CONFIG_KEY_0
+          value: "safe.directory"
+        - name: GIT_CONFIG_VALUE_0
+          value: "*"
         volumeMounts:
         - name: gradle-cache
           mountPath: /root/.gradle

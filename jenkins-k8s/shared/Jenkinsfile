@@ -204,15 +204,11 @@ pipeline {
     post {
         failure {
             script {
-                def logLines   = currentBuild.rawBuild.getLog(200)
-                def logTail    = logLines.join('\n').replace("'", "\\'")
-                def errorLines = logLines.takeRight(20).join('\n').replace("'", "\\'")
-                def failedAt   = env.FAILED_STAGE ?: 'Unknown'
-
+                def failedAt = env.FAILED_STAGE ?: 'Unknown'
                 sh """
                     FAILED_STAGE='${failedAt}' \
-                    ERROR_SNIPPET='${errorLines}' \
-                    LOG_TAIL='${logTail}' \
+                    ERROR_SNIPPET='' \
+                    LOG_TAIL='' \
                     BUILD_NUMBER='${env.BUILD_NUMBER}' \
                     JOB_NAME='${env.JOB_NAME}' \
                     /opt/llm-analysis.sh
