@@ -196,14 +196,19 @@
         state: directory
         mode: "0755"
 
-    - name: Download Jenkins agent jar
-      # Remove force: true so the jar is only re-downloaded when absent.
-      # If the Jenkins server version changes, delete the jar manually to
-      # force a refresh.  Note: the connection is plain HTTP because Jenkins
-      # is on a private LAN (192.168.1.x) — validate_certs is irrelevant
-      # for HTTP but left as default (true) for future HTTPS migration.
+    - name: Download Jenkins agent jar to controller
+      # Mac Mini cannot reach the Jenkins NodePort directly.  Download on the
+      # Ansible controller (which can reach Jenkins) then push via Ansible copy.
+      delegate_to: localhost
       get_url:
-        url: "{{ jenkins_url }}/jnlpJars/agent.jar"
+        url: "http://192.168.1.10:30881/jnlpJars/agent.jar"
+        dest: "/tmp/jenkins-agent.jar"
+        mode: "0644"
+      run_once: true
+
+    - name: Copy Jenkins agent jar to Mac Mini
+      copy:
+        src: "/tmp/jenkins-agent.jar"
         dest: "{{ jenkins_agent_jar }}"
         mode: "0644"
       notify: Restart Jenkins agent
