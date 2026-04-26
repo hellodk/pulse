@@ -24,3 +24,4 @@ The base image (thyrlian/android-sdk:latest) uses Ubuntu 24.04, which enforces P
 - Pushed to Docker Hub: `hellodk/android-jenkins-agent:latest`
 - Digest: sha256:181a8218a936bc2fb17e142b8e35c1254462aa307da745513615e3b33acb1007
 - Also imported into k0s containerd on control-plane node (cylon) for offline use
+- JFrog Artifactory OSS: releases-docker.jfrog.io/jfrog/artifactory-oss:latest (imported into k0s containerd)
