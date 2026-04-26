@@ -16,13 +16,18 @@
 
   handlers:
     - name: Restart Jenkins agent
-      # launchctl load/unload works over SSH; bootstrap/bootout requires a GUI session.
+      # macOS 15: launchctl load/unload removed; bootstrap requires GUI session.
+      # Kill the running process and let nohup restart it (or launchd on next login).
       shell: |
-        launchctl unload \
-          /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist \
-          2>/dev/null || true
-        launchctl load \
-          /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
+        pkill -f "agent.jar" 2>/dev/null || true
+        sleep 2
+        nohup {{ java_home }}/bin/java -jar {{ jenkins_agent_jar }} \
+          -url {{ jenkins_url }} \
+          -secret {{ jenkins_agent_secret }} \
+          -name {{ jenkins_agent_name }} \
+          -workDir {{ jenkins_agent_workdir }} \
+          >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
+      no_log: true
 
   tasks:
 
@@ -258,27 +263,35 @@
           </plist>
       notify: Restart Jenkins agent
 
-    - name: Load Jenkins agent launchd service (first run)
-      # launchctl bootstrap gui/UID requires an active GUI session (not available
-      # over SSH). Use the deprecated-but-SSH-compatible 'launchctl load' instead.
-      # The service will also auto-load on next GUI login via RunAtLoad=true.
+    - name: Start Jenkins agent directly (SSH session — launchd GUI domain unavailable)
+      # macOS 15 removed launchctl load/unload. launchctl bootstrap requires a GUI
+      # session. Over SSH, start the agent directly with nohup. The plist's
+      # RunAtLoad=true + KeepAlive=true will take over on next GUI login/reboot.
       shell: |
-        launchctl list com.jenkins.ios-agent > /dev/null 2>&1 || \
-          launchctl load \
-            /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
+        if launchctl list com.jenkins.ios-agent > /dev/null 2>&1; then
+          echo "service already loaded via launchd"
+        elif pgrep -f "agent.jar" > /dev/null 2>&1; then
+          echo "agent process already running"
+        else
+          nohup {{ java_home }}/bin/java -jar {{ jenkins_agent_jar }} \
+            -url {{ jenkins_url }} \
+            -secret {{ jenkins_agent_secret }} \
+            -name {{ jenkins_agent_name }} \
+            -workDir {{ jenkins_agent_workdir }} \
+            >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
+          echo "agent started via nohup"
+        fi
+      changed_when: false
+      no_log: true
+
+    - name: Check Jenkins agent process is running
+      shell: pgrep -fa "agent.jar" 2>/dev/null || echo "not running"
+      register: agent_proc
       changed_when: false
 
-    - name: Ensure Jenkins agent service is running
-      shell: launchctl list com.jenkins.ios-agent
-      register: launchctl_status
-      changed_when: false
-      # If the service is not in the launchctl list after bootstrap, something
-      # is genuinely wrong — allow the play to fail with a clear message.
-      failed_when: launchctl_status.rc != 0
-
-    - name: Print launchd service status
+    - name: Print agent process status
       debug:
-        msg: "Jenkins iOS agent service: {{ launchctl_status.stdout }}"
+        msg: "{{ agent_proc.stdout }}"
 
     # ── Smoke test ────────────────────────────────────────────────────────
     - name: Wait for agent log to show Connected
