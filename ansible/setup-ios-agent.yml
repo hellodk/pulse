@@ -31,6 +31,66 @@
 
   tasks:
 
+    # ── Power management — prevent sleep on headless CI server ────────────
+    - name: Disable system sleep (never sleep on AC power)
+      become: true
+      command: pmset -a sleep 0
+      changed_when: false
+
+    - name: Disable disk sleep
+      become: true
+      command: pmset -a disksleep 0
+      changed_when: false
+
+    - name: Disable display sleep
+      become: true
+      command: pmset -a displaysleep 0
+      changed_when: false
+
+    - name: Disable hibernation (no RAM→disk dump before sleep)
+      become: true
+      command: pmset -a hibernate 0
+      changed_when: false
+
+    - name: Disable standby mode
+      become: true
+      command: pmset -a standby 0
+      changed_when: false
+
+    - name: Disable auto power-off
+      become: true
+      command: pmset -a autopoweroff 0
+      changed_when: false
+
+    - name: Disable Power Nap (background wake for backups/email)
+      become: true
+      command: pmset -a powernap 0
+      changed_when: false
+
+    - name: Enable Wake on LAN / Magic Packet (allows remote wake)
+      become: true
+      command: pmset -a womp 1
+      changed_when: false
+
+    - name: Keep TCP connections alive during any residual sleep
+      become: true
+      command: pmset -a tcpkeepalive 1
+      changed_when: false
+
+    - name: Disable App Nap (prevents background processes being throttled)
+      # Applies per-user. Does not require sudo.
+      command: defaults write NSGlobalDomain NSAppSleepDisabled -bool YES
+      changed_when: false
+
+    - name: Verify power settings
+      command: pmset -g
+      register: pmset_output
+      changed_when: false
+
+    - name: Print power settings
+      debug:
+        msg: "{{ pmset_output.stdout_lines }}"
+
     # ── Xcode ─────────────────────────────────────────────────────────────
     - name: Get current xcode-select developer path
       command: xcode-select -p
