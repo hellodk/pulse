@@ -1,5 +1,5 @@
 ---
-jenkins_url: "http://192.168.1.10:30881"
+jenkins_url: "http://100.89.50.27:30881"
 jenkins_agent_name: "ios-agent"
 # SECURITY: this secret should be encrypted with ansible-vault rather than
 # stored in plaintext.  Encrypt with:
