@@ -11,9 +11,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                checkout([$class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    userRemoteConfigs: [[url: 'file:///home/dk/Documents/git/sunflower']]])
+                git url: 'file:///home/dk/Documents/git/sunflower', branch: 'main'
                 script {
                     env.VERSION_NAME = sh(
                         script: "git describe --tags --always 2>/dev/null || git rev-parse --short HEAD",

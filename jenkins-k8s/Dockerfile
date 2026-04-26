@@ -49,6 +49,7 @@ RUN chmod +x /opt/llm-analysis.sh /opt/check-licenses.sh
 
 RUN useradd -d /home/jenkins -m -s /bin/bash jenkins 2>/dev/null || true \
     && mkdir -p /home/jenkins/agent \
+    && printf '[safe]\n\tdirectory = *\n' > /home/jenkins/.gitconfig \
     && chown -R jenkins:jenkins /home/jenkins
 
 USER jenkins
