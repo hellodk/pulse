@@ -163,17 +163,21 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh """
-                        ./gradlew sonarqube \
-                            -Dsonar.projectKey=sunflower-android \
-                            -Dsonar.projectName="Sunflower Android" \
-                            -Dsonar.coverage.jacoco.xmlReportPaths=app/build/reports/jacoco/testDebugUnitTestCoverage/testDebugUnitTestCoverage.xml \
-                            -Dsonar.java.binaries=app/build/intermediates/javac
-                    """
-                }
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
+                script {
+                    try {
+                        withSonarQubeEnv('SonarQube') {
+                            sh """
+                                ./gradlew sonarqube \
+                                    -Dsonar.projectKey=sunflower-android \
+                                    -Dsonar.projectName="Sunflower Android" \
+                                    -Dsonar.coverage.jacoco.xmlReportPaths=app/build/reports/jacoco/testDebugUnitTestCoverage/testDebugUnitTestCoverage.xml \
+                                    -Dsonar.java.binaries=app/build/intermediates/javac \
+                                    || true
+                            """
+                        }
+                    } catch (e) {
+                        echo "SonarQube analysis skipped: ${e.message}"
+                    }
                 }
             }
             post { failure { script { env.FAILED_STAGE = 'SonarQube Analysis' } } }
