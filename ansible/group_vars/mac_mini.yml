@@ -1,9 +1,14 @@
 ---
 jenkins_url: "http://192.168.1.10:30881"
 jenkins_agent_name: "ios-agent"
+# SECURITY: this secret should be encrypted with ansible-vault rather than
+# stored in plaintext.  Encrypt with:
+#   ansible-vault encrypt_string '<secret>' --name jenkins_agent_secret
+# and replace the value below with the resulting !vault block.
 jenkins_agent_secret: "d819a1bd31d34e20d87a40664b327a99402ce20b2a7f814905d815f628d29125"
 jenkins_agent_workdir: "/Users/dk/jenkins-agent"
-jenkins_agent_jar: "/Users/dk/jenkins-agent.jar"
+# Jar lives inside the work directory to keep all agent files together.
+jenkins_agent_jar: "/Users/dk/jenkins-agent/agent.jar"
 
 homebrew_prefix: "/opt/homebrew"
 ruby_version: "3.2.2"

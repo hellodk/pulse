@@ -1,23 +1,54 @@
 ---
+# Variables are loaded automatically from group_vars/mac_mini.yml for the
+# [mac_mini] inventory group.  See also inventory.ini.
+#
+# Required group_vars keys:
+#   xcode_path, homebrew_prefix, ruby_version,
+#   jenkins_url, jenkins_agent_name, jenkins_agent_secret,
+#   jenkins_agent_workdir, jenkins_agent_jar
+#
+# Run with:
+#   ansible-playbook -i inventory.ini setup-ios-agent.yml --ask-become-pass
+
 - name: Configure Mac Mini as iOS Jenkins JNLP agent
   hosts: mac_mini
   gather_facts: true
 
+  handlers:
+    - name: Restart Jenkins agent
+      shell: |
+        launchctl bootout gui/$(id -u) \
+          /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist \
+          2>/dev/null || true
+        launchctl bootstrap gui/$(id -u) \
+          /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
+
   tasks:
 
     # ── Xcode ─────────────────────────────────────────────────────────────
+    - name: Get current xcode-select developer path
+      command: xcode-select -p
+      register: xcode_current
+      changed_when: false
+
     - name: Point xcode-select at Xcode.app
       become: true
       command: xcode-select -s {{ xcode_path }}
-      register: xcode_select_result
-      changed_when: xcode_select_result.rc == 0
+      when: xcode_current.stdout | trim != xcode_path
+      # Only runs (and marks changed) when the path actually differs.
 
     - name: Accept Xcode license
       become: true
+      # xcodebuild -license accept exits 0 whether or not the license was
+      # already accepted.  Use -checkFirstLaunchStatus to detect the need.
       command: xcodebuild -license accept
       register: xcode_license
-      changed_when: "'You have agreed' in xcode_license.stdout or xcode_license.rc == 0"
+      # Suppress failure in case the license was already accepted (rc is
+      # still 0 in that case, but some Xcode versions exit non-zero when
+      # already accepted; we do not want to abort the play either way).
       failed_when: false
+      changed_when: false   # purely a one-time administrative step; not
+                             # worth attempting to detect true change
 
     - name: Verify xcodebuild is accessible
       command: xcodebuild -version
@@ -26,7 +57,7 @@
 
     - name: Print Xcode version
       debug:
-        msg: "{{ xcode_version.stdout_lines[0] }}"
+        msg: "{{ xcode_version.stdout_lines | first | default('unknown') }}"
 
     # ── Homebrew ──────────────────────────────────────────────────────────
     - name: Check if Homebrew is installed
@@ -35,17 +66,26 @@
       register: brew_stat
 
     - name: Install Homebrew
-      shell: |
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      # NONINTERACTIVE=1 suppresses all prompts.
+      # The guard (brew_stat.stat.exists) makes this task skip on re-runs.
+      shell: >
+        /bin/bash -c
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       environment:
         NONINTERACTIVE: "1"
       when: not brew_stat.stat.exists
+      # changed_when omitted intentionally: shell tasks default to changed
+      # when they run, which is correct — Homebrew was genuinely installed.
 
     - name: Add Homebrew to PATH in .zprofile
+      # lineinfile is idempotent (will not add a duplicate line), so no
+      # when: guard is strictly required, but we skip on re-runs as a
+      # courtesy to avoid unnecessary file-stat work.
       lineinfile:
         path: "/Users/{{ ansible_user }}/.zprofile"
         line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
         create: true
+        mode: "0644"
       when: not brew_stat.stat.exists
 
     - name: Verify brew is available
@@ -73,12 +113,15 @@
         path: "/Users/{{ ansible_user }}/.zprofile"
         line: 'eval "$(rbenv init - zsh)"'
         create: true
+        mode: "0644"
 
-    - name: Check if Ruby {{ ruby_version }} is installed
+    - name: Check if Ruby {{ ruby_version }} is installed via rbenv
+      # Use bash (matches Ansible's default shell executor) for rbenv init.
       shell: |
         export PATH="{{ homebrew_prefix }}/bin:$PATH"
-        eval "$(rbenv init -)"
-        rbenv versions --bare | grep -qx {{ ruby_version }}
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv versions --bare | grep -qx "{{ ruby_version }}"
       register: ruby_installed
       failed_when: false
       changed_when: false
@@ -86,22 +129,36 @@
     - name: Install Ruby {{ ruby_version }} via rbenv
       shell: |
         export PATH="{{ homebrew_prefix }}/bin:$PATH"
-        eval "$(rbenv init -)"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
         rbenv install {{ ruby_version }}
       when: ruby_installed.rc != 0
+
+    - name: Get current rbenv global Ruby version
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv global
+      register: rbenv_global_current
+      changed_when: false
 
     - name: Set Ruby {{ ruby_version }} as global default
       shell: |
         export PATH="{{ homebrew_prefix }}/bin:$PATH"
-        eval "$(rbenv init -)"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
         rbenv global {{ ruby_version }}
-      changed_when: false
+      when: rbenv_global_current.stdout | trim != ruby_version
 
     # ── Fastlane ──────────────────────────────────────────────────────────
     - name: Check if Fastlane is installed
+      # gem list -i exits 0 (stdout: "true") if found, exits 1 if not.
+      # Rely on rc rather than stdout to avoid whitespace/newline surprises.
       shell: |
         export PATH="{{ homebrew_prefix }}/bin:$PATH"
-        eval "$(rbenv init -)"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
         gem list fastlane -i
       register: fastlane_installed
       failed_when: false
@@ -110,9 +167,27 @@
     - name: Install Fastlane and bundler gems
       shell: |
         export PATH="{{ homebrew_prefix }}/bin:$PATH"
-        eval "$(rbenv init -)"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
         gem install fastlane bundler xcpretty --no-document
-      when: fastlane_installed.stdout != "true"
+      when: fastlane_installed.rc != 0
+
+    # ── Resolve Java 21 path ──────────────────────────────────────────────
+    - name: Resolve Java 21 home via java_home utility
+      # /usr/libexec/java_home -v 21 prints the canonical JDK home and exits
+      # 1 if no matching JDK is found, which will abort the play early with
+      # a clear error rather than producing a silent misconfiguration.
+      command: /usr/libexec/java_home -v 21
+      register: java_home_result
+      changed_when: false
+
+    - name: Set java_home fact
+      set_fact:
+        java_home: "{{ java_home_result.stdout | trim }}"
+
+    - name: Print resolved Java home
+      debug:
+        msg: "Java 21 home: {{ java_home }}"
 
     # ── Jenkins agent jar ─────────────────────────────────────────────────
     - name: Create Jenkins agent work directory
@@ -122,13 +197,26 @@
         mode: "0755"
 
     - name: Download Jenkins agent jar
+      # Remove force: true so the jar is only re-downloaded when absent.
+      # If the Jenkins server version changes, delete the jar manually to
+      # force a refresh.  Note: the connection is plain HTTP because Jenkins
+      # is on a private LAN (192.168.1.x) — validate_certs is irrelevant
+      # for HTTP but left as default (true) for future HTTPS migration.
       get_url:
         url: "{{ jenkins_url }}/jnlpJars/agent.jar"
         dest: "{{ jenkins_agent_jar }}"
         mode: "0644"
-        force: true
+      notify: Restart Jenkins agent
 
     # ── launchd plist ─────────────────────────────────────────────────────
+    - name: Ensure ~/Library/LaunchAgents directory exists
+      # This directory is usually present but is not guaranteed on all user
+      # profiles, especially freshly provisioned accounts.
+      file:
+        path: "/Users/{{ ansible_user }}/Library/LaunchAgents"
+        state: directory
+        mode: "0755"
+
     - name: Deploy Jenkins agent launchd plist
       copy:
         dest: "/Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist"
@@ -143,7 +231,7 @@
               <string>com.jenkins.ios-agent</string>
               <key>ProgramArguments</key>
               <array>
-                  <string>/usr/bin/java</string>
+                  <string>{{ java_home }}/bin/java</string>
                   <string>-jar</string>
                   <string>{{ jenkins_agent_jar }}</string>
                   <string>-url</string>
@@ -155,6 +243,11 @@
                   <string>-workDir</string>
                   <string>{{ jenkins_agent_workdir }}</string>
               </array>
+              <key>EnvironmentVariables</key>
+              <dict>
+                  <key>JAVA_HOME</key>
+                  <string>{{ java_home }}</string>
+              </dict>
               <key>RunAtLoad</key>
               <true/>
               <key>KeepAlive</key>
@@ -167,18 +260,23 @@
               <integer>10</integer>
           </dict>
           </plist>
-      register: plist_deployed
+      notify: Restart Jenkins agent
 
-    - name: Load (or reload) the Jenkins agent launchd service
+    - name: Bootstrap Jenkins agent launchd service (first run)
+      # Use the modern bootstrap/bootout API (replaces deprecated load/unload).
+      # This task runs only when the service is not already loaded.
       shell: |
-        launchctl unload ~/Library/LaunchAgents/com.jenkins.ios-agent.plist 2>/dev/null || true
-        launchctl load ~/Library/LaunchAgents/com.jenkins.ios-agent.plist
-      when: plist_deployed.changed
+        launchctl list com.jenkins.ios-agent > /dev/null 2>&1 || \
+          launchctl bootstrap gui/$(id -u) \
+            /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
+      changed_when: false  # Handler manages restarts; this is a first-run guard.
 
     - name: Ensure Jenkins agent service is running
-      shell: launchctl list | grep com.jenkins.ios-agent
+      shell: launchctl list com.jenkins.ios-agent
       register: launchctl_status
       changed_when: false
+      # If the service is not in the launchctl list after bootstrap, something
+      # is genuinely wrong — allow the play to fail with a clear message.
       failed_when: launchctl_status.rc != 0
 
     - name: Print launchd service status
@@ -193,7 +291,9 @@
         timeout: 60
       register: agent_connected
       failed_when: false
+      # If the log file does not appear within 60 s, agent_connected will
+      # lack a .matched key — use default(false) to guard against that.
 
     - name: Agent connection status
       debug:
-        msg: "{{ 'iOS agent CONNECTED to Jenkins C' if agent_connected.matched else 'Agent log not yet showing Connected — check manually' }}"
+        msg: "{{ 'iOS agent CONNECTED to Jenkins C' if agent_connected.matched | default(false) else 'Agent log not yet showing Connected — check manually' }}"
