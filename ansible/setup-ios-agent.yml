@@ -16,11 +16,12 @@
 
   handlers:
     - name: Restart Jenkins agent
+      # launchctl load/unload works over SSH; bootstrap/bootout requires a GUI session.
       shell: |
-        launchctl bootout gui/$(id -u) \
+        launchctl unload \
           /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist \
           2>/dev/null || true
-        launchctl bootstrap gui/$(id -u) \
+        launchctl load \
           /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
 
   tasks:
@@ -257,14 +258,15 @@
           </plist>
       notify: Restart Jenkins agent
 
-    - name: Bootstrap Jenkins agent launchd service (first run)
-      # Use the modern bootstrap/bootout API (replaces deprecated load/unload).
-      # This task runs only when the service is not already loaded.
+    - name: Load Jenkins agent launchd service (first run)
+      # launchctl bootstrap gui/UID requires an active GUI session (not available
+      # over SSH). Use the deprecated-but-SSH-compatible 'launchctl load' instead.
+      # The service will also auto-load on next GUI login via RunAtLoad=true.
       shell: |
         launchctl list com.jenkins.ios-agent > /dev/null 2>&1 || \
-          launchctl bootstrap gui/$(id -u) \
+          launchctl load \
             /Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist
-      changed_when: false  # Handler manages restarts; this is a first-run guard.
+      changed_when: false
 
     - name: Ensure Jenkins agent service is running
       shell: launchctl list com.jenkins.ios-agent
