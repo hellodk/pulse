@@ -173,20 +173,9 @@
       when: fastlane_installed.rc != 0
 
     # ── Resolve Java 21 path ──────────────────────────────────────────────
-    - name: Resolve Java 21 home via java_home utility
-      # tags: always ensures this runs even with --start-at-task so that
-      # java_home is always defined for the plist task.
-      command: /usr/libexec/java_home -v 21
-      register: java_home_result
-      changed_when: false
-      tags: always
-
-    - name: Set java_home fact
-      set_fact:
-        java_home: "{{ java_home_result.stdout | trim }}"
-      tags: always
-
     - name: Print resolved Java home
+      # java_home is defined in group_vars/mac_mini.yml — resolved once via
+      # /usr/libexec/java_home -v 21 and hardcoded for idempotent runs.
       debug:
         msg: "Java 21 home: {{ java_home }}"
 

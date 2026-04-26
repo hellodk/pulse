@@ -14,3 +14,6 @@ homebrew_prefix: "/opt/homebrew"
 ruby_version: "3.2.2"
 
 xcode_path: "/Applications/Xcode.app/Contents/Developer"
+
+# Resolved via: /usr/libexec/java_home -v 21 on mm1
+java_home: "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home"
