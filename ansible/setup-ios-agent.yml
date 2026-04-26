@@ -174,16 +174,17 @@
 
     # ── Resolve Java 21 path ──────────────────────────────────────────────
     - name: Resolve Java 21 home via java_home utility
-      # /usr/libexec/java_home -v 21 prints the canonical JDK home and exits
-      # 1 if no matching JDK is found, which will abort the play early with
-      # a clear error rather than producing a silent misconfiguration.
+      # tags: always ensures this runs even with --start-at-task so that
+      # java_home is always defined for the plist task.
       command: /usr/libexec/java_home -v 21
       register: java_home_result
       changed_when: false
+      tags: always
 
     - name: Set java_home fact
       set_fact:
         java_home: "{{ java_home_result.stdout | trim }}"
+      tags: always
 
     - name: Print resolved Java home
       debug:
