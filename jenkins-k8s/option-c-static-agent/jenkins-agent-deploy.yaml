@@ -53,6 +53,9 @@ spec:
         - name: sunflower
           mountPath: /home/dk/Documents/git/sunflower
           readOnly: true
+        - name: gitconfig
+          mountPath: /home/jenkins/.gitconfig
+          subPath: gitconfig
         resources:
           requests:
             memory: "2Gi"
@@ -72,3 +75,6 @@ spec:
         hostPath:
           path: /home/dk/Documents/git/sunflower
           type: Directory
+      - name: gitconfig
+        configMap:
+          name: gitconfig-safe
