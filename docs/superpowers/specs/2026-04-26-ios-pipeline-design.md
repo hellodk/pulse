@@ -119,6 +119,7 @@ pipeline {
         SCHEME          = 'Fruta'
         WORKSPACE       = 'Fruta.xcodeproj'
         NEXUS_CREDS     = credentials('nexus-creds')
+        JFROG_CREDS     = credentials('jfrog-creds')
         BUILD_VERSION   = "${env.BUILD_NUMBER}"
     }
 
@@ -262,6 +263,29 @@ pipeline {
                 }
             }
         }
+
+        stage('JFrog Upload') {
+            steps {
+                script {
+                    def ipaPath = sh(
+                        script: "find build -name '*.ipa' | head -1",
+                        returnStdout: true
+                    ).trim()
+                    if (ipaPath) {
+                        sh """
+                            curl -sf \
+                                -u "${env.JFROG_CREDS_USR}:${env.JFROG_CREDS_PSW}" \
+                                -X PUT \
+                                --upload-file "${ipaPath}" \
+                                "http://192.168.1.10:30082/artifactory/example-repo-local/ios/${env.IPA_NAME}" \
+                                && echo "Uploaded to JFrog: ${env.IPA_NAME}"
+                        """
+                    } else {
+                        echo "No IPA found — skipping JFrog upload"
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -379,6 +403,17 @@ platform :ios do
        "'http://192.168.1.10:30081/repository/ios-releases/#{File.basename(ipa_path)}'")
   end
 
+  # ── Upload to JFrog Artifactory ──────────────────────────────────────────
+  lane :upload_jfrog do
+    ipa_path = lane_context[SharedValues::IPA_OUTPUT_PATH]
+    ipa_name = File.basename(ipa_path)
+    sh("curl -sf " \
+       "-u #{ENV['JFROG_USER']}:#{ENV['JFROG_PASS']} " \
+       "-X PUT --upload-file '#{ipa_path}' " \
+       "'http://192.168.1.10:30082/artifactory/example-repo-local/ios/#{ipa_name}' " \
+       "&& echo 'Uploaded to JFrog: #{ipa_name}'")
+  end
+
   # ── Upload to TestFlight ─────────────────────────────────────────────────
   lane :testflight do
     upload_to_testflight(
@@ -393,6 +428,7 @@ platform :ios do
     build
     sast
     upload_nexus
+    upload_jfrog
   end
 
   # ── Release to TestFlight ────────────────────────────────────────────────
@@ -465,12 +501,14 @@ pipeline {
 
         stage('Upload') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'nexus-creds',
-                    usernameVariable: 'NEXUS_USER',
-                    passwordVariable: 'NEXUS_PASS'
-                )]) {
+                withCredentials([
+                    usernamePassword(credentialsId: 'nexus-creds',
+                        usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS'),
+                    usernamePassword(credentialsId: 'jfrog-creds',
+                        usernameVariable: 'JFROG_USER', passwordVariable: 'JFROG_PASS')
+                ]) {
                     sh 'bundle exec fastlane upload_nexus'
+                    sh 'bundle exec fastlane upload_jfrog'
                 }
             }
         }
@@ -519,7 +557,8 @@ pipeline {
 | OWASP Dependency-Check | `swift package audit` (SPM) |
 | License checker script | LicensePlist |
 | SonarQube | SonarCloud (cloud) or SonarQube with Swift plugin |
-| Nexus upload | Nexus upload (IPA) OR TestFlight via Fastlane `pilot` |
+| Nexus upload | Nexus upload (APK/IPA) |
+| JFrog Artifactory | JFrog upload (example-repo-local/ios/) |
 
 ---
 
