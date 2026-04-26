@@ -18,6 +18,7 @@ spec:
       - jenkins-b
       - jenkins-c
       - android-build-agent
+      - jfrog
   policyTypes:
   - Ingress
   - Egress
@@ -35,6 +36,7 @@ spec:
           - jenkins-b
           - jenkins-c
           - android-build-agent
+          - jfrog
   egress:
   - to:
     - podSelector:
@@ -49,6 +51,7 @@ spec:
           - jenkins-b
           - jenkins-c
           - android-build-agent
+          - jfrog
   # Allow DNS
   - to: []
     ports:

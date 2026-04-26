@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jfrog-data
+  namespace: utilities
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jfrog
+  namespace: utilities
+  labels:
+    app: jfrog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jfrog
+  template:
+    metadata:
+      labels:
+        app: jfrog
+    spec:
+      securityContext:
+        fsGroup: 1030
+        runAsUser: 1030
+      initContainers:
+      - name: fix-permissions
+        image: busybox:1.28
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - |
+          chown -R 1030:1030 /var/opt/jfrog/artifactory
+          mkdir -p /var/opt/jfrog/artifactory/etc/security
+          if [ ! -f /var/opt/jfrog/artifactory/etc/security/master.key ]; then
+            printf '%s' "4c9cbbbe3e838bac41b8c8654bd49343924fe2ed6c48ee7055a951e523da34e8" \
+              > /var/opt/jfrog/artifactory/etc/security/master.key
+            chmod 640 /var/opt/jfrog/artifactory/etc/security/master.key
+            chown 1030:1030 /var/opt/jfrog/artifactory/etc/security/master.key
+          fi
+          if [ ! -f /var/opt/jfrog/artifactory/etc/security/join.key ]; then
+            printf '%s' "9458305840ef1175b3b00354e27d89c22542203ae92121e2c639c871ed4b2cdc" \
+              > /var/opt/jfrog/artifactory/etc/security/join.key
+            chmod 640 /var/opt/jfrog/artifactory/etc/security/join.key
+            chown 1030:1030 /var/opt/jfrog/artifactory/etc/security/join.key
+          fi
+        volumeMounts:
+        - name: jfrog-data
+          mountPath: /var/opt/jfrog/artifactory
+      containers:
+      - name: artifactory
+        image: releases-docker.jfrog.io/jfrog/artifactory-oss:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8082
+          name: http
+        env:
+        - name: JF_SHARED_DATABASE_TYPE
+          value: "postgresql"
+        - name: JF_SHARED_DATABASE_DRIVER
+          value: "org.postgresql.Driver"
+        - name: JF_SHARED_DATABASE_URL
+          value: "jdbc:postgresql://postgres:5432/jfrog"
+        - name: JF_SHARED_DATABASE_USERNAME
+          value: "jfrog"
+        - name: JF_SHARED_DATABASE_PASSWORD
+          value: "jfrog123"
+        volumeMounts:
+        - name: jfrog-data
+          mountPath: /var/opt/jfrog/artifactory
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "3Gi"
+            cpu: "2"
+        readinessProbe:
+          httpGet:
+            path: /artifactory/api/system/ping
+            port: 8082
+          initialDelaySeconds: 120
+          periodSeconds: 15
+          failureThreshold: 10
+        livenessProbe:
+          httpGet:
+            path: /artifactory/api/system/ping
+            port: 8082
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          failureThreshold: 5
+      volumes:
+      - name: jfrog-data
+        persistentVolumeClaim:
+          claimName: jfrog-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jfrog
+  namespace: utilities
+spec:
+  selector:
+    app: jfrog
+  type: NodePort
+  ports:
+  - name: http
+    port: 8082
+    targetPort: 8082
+    nodePort: 30082
