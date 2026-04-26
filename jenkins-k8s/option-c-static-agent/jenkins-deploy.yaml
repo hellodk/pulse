@@ -18,6 +18,20 @@ spec:
       securityContext:
         fsGroup: 1000
         runAsUser: 1000
+      initContainers:
+      - name: git-config
+        image: busybox:1.28
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - |
+          printf '[safe]\n\tdirectory = *\n' > /var/jenkins_home/.gitconfig
+          chown 1000:1000 /var/jenkins_home/.gitconfig
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
       containers:
       - name: jenkins
         image: hellodk/jenkins-c:latest
