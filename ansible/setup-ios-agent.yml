@@ -1,0 +1,199 @@
+---
+- name: Configure Mac Mini as iOS Jenkins JNLP agent
+  hosts: mac_mini
+  gather_facts: true
+
+  tasks:
+
+    # ── Xcode ─────────────────────────────────────────────────────────────
+    - name: Point xcode-select at Xcode.app
+      become: true
+      command: xcode-select -s {{ xcode_path }}
+      register: xcode_select_result
+      changed_when: xcode_select_result.rc == 0
+
+    - name: Accept Xcode license
+      become: true
+      command: xcodebuild -license accept
+      register: xcode_license
+      changed_when: "'You have agreed' in xcode_license.stdout or xcode_license.rc == 0"
+      failed_when: false
+
+    - name: Verify xcodebuild is accessible
+      command: xcodebuild -version
+      register: xcode_version
+      changed_when: false
+
+    - name: Print Xcode version
+      debug:
+        msg: "{{ xcode_version.stdout_lines[0] }}"
+
+    # ── Homebrew ──────────────────────────────────────────────────────────
+    - name: Check if Homebrew is installed
+      stat:
+        path: "{{ homebrew_prefix }}/bin/brew"
+      register: brew_stat
+
+    - name: Install Homebrew
+      shell: |
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      environment:
+        NONINTERACTIVE: "1"
+      when: not brew_stat.stat.exists
+
+    - name: Add Homebrew to PATH in .zprofile
+      lineinfile:
+        path: "/Users/{{ ansible_user }}/.zprofile"
+        line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+        create: true
+      when: not brew_stat.stat.exists
+
+    - name: Verify brew is available
+      command: "{{ homebrew_prefix }}/bin/brew --version"
+      changed_when: false
+
+    # ── SwiftLint ─────────────────────────────────────────────────────────
+    - name: Install SwiftLint via Homebrew
+      community.general.homebrew:
+        name: swiftlint
+        state: present
+        path: "{{ homebrew_prefix }}/bin"
+
+    # ── rbenv + Ruby ──────────────────────────────────────────────────────
+    - name: Install rbenv and ruby-build via Homebrew
+      community.general.homebrew:
+        name:
+          - rbenv
+          - ruby-build
+        state: present
+        path: "{{ homebrew_prefix }}/bin"
+
+    - name: Add rbenv init to .zprofile
+      lineinfile:
+        path: "/Users/{{ ansible_user }}/.zprofile"
+        line: 'eval "$(rbenv init - zsh)"'
+        create: true
+
+    - name: Check if Ruby {{ ruby_version }} is installed
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        eval "$(rbenv init -)"
+        rbenv versions --bare | grep -qx {{ ruby_version }}
+      register: ruby_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install Ruby {{ ruby_version }} via rbenv
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        eval "$(rbenv init -)"
+        rbenv install {{ ruby_version }}
+      when: ruby_installed.rc != 0
+
+    - name: Set Ruby {{ ruby_version }} as global default
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        eval "$(rbenv init -)"
+        rbenv global {{ ruby_version }}
+      changed_when: false
+
+    # ── Fastlane ──────────────────────────────────────────────────────────
+    - name: Check if Fastlane is installed
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        eval "$(rbenv init -)"
+        gem list fastlane -i
+      register: fastlane_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install Fastlane and bundler gems
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        eval "$(rbenv init -)"
+        gem install fastlane bundler xcpretty --no-document
+      when: fastlane_installed.stdout != "true"
+
+    # ── Jenkins agent jar ─────────────────────────────────────────────────
+    - name: Create Jenkins agent work directory
+      file:
+        path: "{{ jenkins_agent_workdir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download Jenkins agent jar
+      get_url:
+        url: "{{ jenkins_url }}/jnlpJars/agent.jar"
+        dest: "{{ jenkins_agent_jar }}"
+        mode: "0644"
+        force: true
+
+    # ── launchd plist ─────────────────────────────────────────────────────
+    - name: Deploy Jenkins agent launchd plist
+      copy:
+        dest: "/Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist"
+        mode: "0644"
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Label</key>
+              <string>com.jenkins.ios-agent</string>
+              <key>ProgramArguments</key>
+              <array>
+                  <string>/usr/bin/java</string>
+                  <string>-jar</string>
+                  <string>{{ jenkins_agent_jar }}</string>
+                  <string>-url</string>
+                  <string>{{ jenkins_url }}</string>
+                  <string>-secret</string>
+                  <string>{{ jenkins_agent_secret }}</string>
+                  <string>-name</string>
+                  <string>{{ jenkins_agent_name }}</string>
+                  <string>-workDir</string>
+                  <string>{{ jenkins_agent_workdir }}</string>
+              </array>
+              <key>RunAtLoad</key>
+              <true/>
+              <key>KeepAlive</key>
+              <true/>
+              <key>StandardOutPath</key>
+              <string>{{ jenkins_agent_workdir }}/agent.log</string>
+              <key>StandardErrorPath</key>
+              <string>{{ jenkins_agent_workdir }}/agent-error.log</string>
+              <key>ThrottleInterval</key>
+              <integer>10</integer>
+          </dict>
+          </plist>
+      register: plist_deployed
+
+    - name: Load (or reload) the Jenkins agent launchd service
+      shell: |
+        launchctl unload ~/Library/LaunchAgents/com.jenkins.ios-agent.plist 2>/dev/null || true
+        launchctl load ~/Library/LaunchAgents/com.jenkins.ios-agent.plist
+      when: plist_deployed.changed
+
+    - name: Ensure Jenkins agent service is running
+      shell: launchctl list | grep com.jenkins.ios-agent
+      register: launchctl_status
+      changed_when: false
+      failed_when: launchctl_status.rc != 0
+
+    - name: Print launchd service status
+      debug:
+        msg: "Jenkins iOS agent service: {{ launchctl_status.stdout }}"
+
+    # ── Smoke test ────────────────────────────────────────────────────────
+    - name: Wait for agent log to show Connected
+      wait_for:
+        path: "{{ jenkins_agent_workdir }}/agent.log"
+        search_regex: "Connected"
+        timeout: 60
+      register: agent_connected
+      failed_when: false
+
+    - name: Agent connection status
+      debug:
+        msg: "{{ 'iOS agent CONNECTED to Jenkins C' if agent_connected.matched else 'Agent log not yet showing Connected — check manually' }}"
