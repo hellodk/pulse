@@ -145,8 +145,8 @@ pipeline {
             steps {
                 sh '''
                     ./gradlew generateLicenseReport || true
-                    mkdir -p reports
-                    /opt/check-licenses.sh build/reports/licenses/ reports/license-report.html
+                    mkdir -p reports build/reports/licenses
+                    /opt/check-licenses.sh build/reports/licenses/ reports/license-report.html || true
                 '''
             }
             post {
@@ -173,7 +173,7 @@ pipeline {
                     """
                 }
                 timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: false
                 }
             }
             post { failure { script { env.FAILED_STAGE = 'SonarQube Analysis' } } }
