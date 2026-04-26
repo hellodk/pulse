@@ -50,6 +50,9 @@ spec:
         - name: git-repo
           mountPath: /home/dk/Documents/git/testing-grounds
           readOnly: true
+        - name: sunflower
+          mountPath: /home/dk/Documents/git/sunflower
+          readOnly: true
         resources:
           requests:
             memory: "2Gi"
@@ -64,4 +67,8 @@ spec:
       - name: git-repo
         hostPath:
           path: /home/dk/Documents/git/testing-grounds
+          type: Directory
+      - name: sunflower
+        hostPath:
+          path: /home/dk/Documents/git/sunflower
           type: Directory
