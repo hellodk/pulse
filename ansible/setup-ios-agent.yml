@@ -239,6 +239,55 @@
         gem install fastlane bundler xcpretty --no-document
       when: fastlane_installed.rc != 0
 
+    # ── nvm + Node.js (required for React Native pipelines) ──────────────
+    - name: Check if nvm is installed
+      shell: "[ -s {{ ansible_env.HOME }}/.nvm/nvm.sh ] && echo yes || echo no"
+      register: nvm_check
+      changed_when: false
+
+    - name: Install nvm
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+      when: nvm_check.stdout == "no"
+
+    - name: Install Node.js LTS via nvm
+      shell: |
+        export NVM_DIR="{{ ansible_env.HOME }}/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install --lts
+        nvm alias default node
+        node --version
+      register: node_install
+      changed_when: '"already installed" not in node_install.stdout'
+
+    - name: Add nvm init to .zprofile for Jenkins agent shell
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zprofile"
+        line: |
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        create: true
+        mode: "0644"
+
+    # ── CocoaPods (required for React Native iOS native deps) ─────────────
+    - name: Check if CocoaPods is installed
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem list cocoapods -i
+      register: cocoapods_check
+      failed_when: false
+      changed_when: false
+
+    - name: Install CocoaPods gem
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem install cocoapods --no-document
+      when: cocoapods_check.rc != 0
+
     # ── Resolve Java 21 path ──────────────────────────────────────────────
     - name: Print resolved Java home
       # java_home is defined in group_vars/mac_mini.yml — resolved once via
