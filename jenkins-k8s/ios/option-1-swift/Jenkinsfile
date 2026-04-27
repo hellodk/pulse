@@ -1,213 +1,69 @@
 pipeline {
     agent { label 'ios-agent' }
-
     environment {
-        APP_NAME      = 'FoodTruck'
-        SCHEME        = 'Food Truck'
-        WORKSPACE     = 'FoodTruck.xcodeproj'
-        NEXUS_CREDS   = credentials('nexus-creds')
-        JFROG_CREDS   = credentials('jfrog-creds')
-        JFROG_URL     = 'http://100.89.50.27:30082/artifactory/example-repo-local'
-        NEXUS_URL     = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
-        SIMULATOR     = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
-        REPORTS_DIR   = 'reports'
+        APP_NAME    = 'FoodTruck'
+        SCHEME      = 'Food Truck'
+        WORKSPACE   = 'FoodTruck.xcodeproj'
+        NEXUS_CREDS = credentials('nexus-creds')
+        JFROG_CREDS = credentials('jfrog-creds')
+        JFROG_URL   = 'http://100.89.50.27:30082/artifactory/example-repo-local'
+        NEXUS_URL   = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
+        SIMULATOR   = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
+        REPORTS_DIR = 'reports'
     }
-
     stages {
         stage('Checkout') {
             steps {
                 git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
                 script {
                     env.GIT_SHA  = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.IPA_NAME = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.ipa"
+                    env.ARTIFACT = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip"
                 }
             }
         }
-
-        stage('Validate Environment') {
+        stage('Validate') {
             steps {
-                sh '''
-                    source ~/.bashrc 2>/dev/null || true
-                    set -e
-                    xcodebuild -version
-                    swift --version
-                    swiftlint version
-                    xcpretty --version
-                '''
+                sh 'source ~/.bashrc 2>/dev/null || true; set -e; xcodebuild -version; swift --version; swiftlint version; xcpretty --version'
             }
         }
-
         stage('Resolve Dependencies') {
-            steps {
-                sh "xcodebuild -resolvePackageDependencies -project ${WORKSPACE} -scheme '${SCHEME}'"
-            }
+            steps { sh "xcodebuild -resolvePackageDependencies -project ${WORKSPACE} -scheme '${SCHEME}'" }
         }
-
         stage('Build Archive') {
             steps {
-                sh '''
-                    source ~/.bashrc 2>/dev/null || true
-                    mkdir -p build reports
-                '''
-                sh """
-                    agvtool new-version -all ${BUILD_NUMBER} || true
-
-                    xcodebuild archive \\
-                        -project ${WORKSPACE} \\
-                        -scheme '${SCHEME}' \\
-                        -configuration Release \\
-                        -archivePath build/${APP_NAME}.xcarchive \\
-                        CODE_SIGN_IDENTITY=- \\
-                        CODE_SIGNING_REQUIRED=NO \\
-                        CODE_SIGNING_ALLOWED=NO \\
-                        | xcpretty || true
-                """
-                // Generate ExportOptions inline — no plist file needed in the repo.
-                // Export succeeds when a signing identity is configured; falls back to
-                // zipped xcarchive so the build artifact is always present.
-                sh """
-                    cat > /tmp/ExportOptions.plist << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-    <key>method</key><string>development</string>
-    <key>signingStyle</key><string>automatic</string>
-    <key>compileBitcode</key><false/>
-    <key>stripSwiftSymbols</key><true/>
-</dict></plist>
-PLIST
-
-                    xcodebuild -exportArchive \\
-                        -archivePath build/${APP_NAME}.xcarchive \\
-                        -exportPath build/ \\
-                        -exportOptionsPlist /tmp/ExportOptions.plist \\
-                        | xcpretty || true
-
-                    if ! ls build/*.ipa 1>/dev/null 2>&1; then
-                        echo "No IPA produced (signing not configured) — archiving xcarchive"
-                        zip -r build/${APP_NAME}-${BUILD_NUMBER}.xcarchive.zip \\
-                            build/${APP_NAME}.xcarchive
-                    fi
-                """
-                archiveArtifacts artifacts: 'build/*.ipa,build/*.zip', allowEmptyArchive: true
+                sh "mkdir -p build ${REPORTS_DIR}; agvtool new-version -all ${BUILD_NUMBER} || true"
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -project ${WORKSPACE} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
+                sh 'zip -r build/${ARTIFACT} build/${APP_NAME}.xcarchive || true'
+                archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
             }
         }
-
         stage('Unit Tests') {
             steps {
-                sh """
-                    source ~/.bashrc 2>/dev/null || true
-                    xcodebuild test \\
-                        -project ${WORKSPACE} \\
-                        -scheme '${SCHEME}' \\
-                        -destination '${SIMULATOR}' \\
-                        -resultBundlePath build/TestResults.xcresult \\
-                        | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true
-                """
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -project ${WORKSPACE} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true'
             }
-            post {
-                always {
-                    junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/test-results.xml"
-                }
-            }
+            post { always { junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/test-results.xml" } }
         }
-
         stage('SAST') {
             parallel {
-                stage('SwiftLint') {
-                    steps {
-                        sh """
-                            source ~/.bashrc 2>/dev/null || true
-                            swiftlint lint --reporter html > ${REPORTS_DIR}/swiftlint.html || true
-                            swiftlint lint --reporter json > ${REPORTS_DIR}/swiftlint.json || true
-                        """
-                    }
-                }
-                stage('Semgrep') {
-                    steps {
-                        sh """
-                            semgrep --config=auto \\
-                                --json \\
-                                --output=${REPORTS_DIR}/semgrep-ios.json \\
-                                --include='*.swift' \\
-                                --exclude='build/' . || true
-                        """
-                    }
-                }
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-                        reportDir: REPORTS_DIR, reportFiles: 'swiftlint.html',
-                        reportName: 'SwiftLint'
-                    ])
-                }
+                stage('SwiftLint') { steps { sh 'source ~/.bashrc 2>/dev/null; swiftlint lint --reporter html > ${REPORTS_DIR}/swiftlint.html || true' } }
+                stage('Semgrep')   { steps { sh 'semgrep --config=auto --json --output=${REPORTS_DIR}/semgrep.json --include="*.swift" --exclude="build/" . || true' } }
             }
         }
-
-        stage('License Compliance') {
-            steps {
-                sh """
-                    source ~/.bashrc 2>/dev/null || true
-                    licenseplist --output-path ${REPORTS_DIR}/licenses || true
-                    grep -ri "GPL" ${REPORTS_DIR}/licenses/ && echo "WARNING: GPL license detected" || true
-                """
-            }
-        }
-
-        stage('Upload Artifacts') {
+        stage('Upload') {
             steps {
                 script {
-                    def artifact = sh(
-                        script: "find build -name '*.ipa' -o -name '*.zip' | head -1",
-                        returnStdout: true
-                    ).trim()
-                    if (artifact) {
-                        sh """
-                            curl -sf \\
-                                -u "${NEXUS_CREDS_USR}:${NEXUS_CREDS_PSW}" \\
-                                --upload-file '${artifact}' \\
-                                '${NEXUS_URL}/${IPA_NAME}' && echo "Nexus: uploaded" || true
-
-                            curl -sf \\
-                                -u "${JFROG_CREDS_USR}:${JFROG_CREDS_PSW}" \\
-                                -X PUT \\
-                                --upload-file '${artifact}' \\
-                                '${JFROG_URL}/ios/${IPA_NAME}' && echo "JFrog: uploaded" || true
-                        """
-                    } else {
-                        echo "No artifact found — skipping upload"
+                    def a = sh(script: 'find build -name "*.zip" -o -name "*.ipa" | head -1', returnStdout: true).trim()
+                    if (a) {
+                        sh 'curl -sf -u "${NEXUS_CREDS_USR}:${NEXUS_CREDS_PSW}" --upload-file \'${a}\' "${NEXUS_URL}/${ARTIFACT}" && echo "Nexus ok" || true'
+                        sh 'curl -sf -u "${JFROG_CREDS_USR}:${JFROG_CREDS_PSW}" -X PUT --upload-file \'${a}\' "${JFROG_URL}/ios/${ARTIFACT}" && echo "JFrog ok" || true'
                     }
                 }
             }
         }
     }
-
     post {
-        failure {
-            sh """
-                FAILED_STAGE='${env.FAILED_STAGE ?: "Unknown"}' \\
-                BUILD_NUMBER='${BUILD_NUMBER}' \\
-                JOB_NAME='${JOB_NAME}' \\
-                ERROR_SNIPPET='' LOG_TAIL='' \\
-                /opt/llm-analysis.sh || true
-            """
-            emailext(
-                subject: "[iOS-Swift FAILURE] ${JOB_NAME} #${BUILD_NUMBER}",
-                to: 'hello.dk@outlook.com',
-                mimeType: 'text/html',
-                body: '${SCRIPT, template="failure-email.groovy"}'
-            )
-        }
-        success {
-            emailext(
-                subject: "[iOS-Swift SUCCESS] ${JOB_NAME} #${BUILD_NUMBER} — artifact ready",
-                to: 'hello.dk@outlook.com',
-                mimeType: 'text/html',
-                body: '${SCRIPT, template="success-email.groovy"}'
-            )
-        }
+        failure { emailext(subject: "[iOS-Swift FAILURE] ${JOB_NAME} #${BUILD_NUMBER}", to: 'hello.dk@outlook.com', mimeType: 'text/html', body: '${SCRIPT, template="failure-email.groovy"}') }
+        success { emailext(subject: "[iOS-Swift SUCCESS] ${JOB_NAME} #${BUILD_NUMBER}", to: 'hello.dk@outlook.com', mimeType: 'text/html', body: '${SCRIPT, template="success-email.groovy"}') }
         cleanup { deleteDir() }
     }
 }
