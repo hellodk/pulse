@@ -17,12 +17,28 @@ spec:
     spec:
       containers:
       - name: postfix
-        image: namshi/smtp:latest
+        image: boky/postfix:latest
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 25
         env:
-        - name: RELAY_NETWORKS
-          value: ":10.0.0.0/8:172.16.0.0/12:192.168.0.0/16"
+        # boky/postfix relay configuration — STARTTLS to Mailtrap on port 587
+        - name: RELAYHOST
+          value: "[live.smtp.mailtrap.io]:587"
+        - name: RELAYHOST_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mailtrap-smtp-creds
+              key: username
+        - name: RELAYHOST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mailtrap-smtp-creds
+              key: password
+        - name: ALLOWED_SENDER_DOMAINS
+          value: "hellodk.io jenkins-ci.hellodk.io"
+        - name: POSTFIX_myhostname
+          value: "jenkins-ci.hellodk.io"
         readinessProbe:
           tcpSocket:
             port: 25

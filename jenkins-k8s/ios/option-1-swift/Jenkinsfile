@@ -62,8 +62,8 @@ pipeline {
         }
     }
     post {
-        failure { emailext(subject: "[iOS-Swift FAILURE] ${JOB_NAME} #${BUILD_NUMBER}", to: 'hello.dk@outlook.com', mimeType: 'text/html', body: '${SCRIPT, template="failure-email.groovy"}') }
-        success { emailext(subject: "[iOS-Swift SUCCESS] ${JOB_NAME} #${BUILD_NUMBER}", to: 'hello.dk@outlook.com', mimeType: 'text/html', body: '${SCRIPT, template="success-email.groovy"}') }
+        failure { emailext(subject: "[iOS-Swift FAILURE] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="failure-email.groovy"}') }
+        success { emailext(subject: "[iOS-Swift SUCCESS] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="success-email.groovy"}') }
         cleanup { deleteDir() }
     }
 }

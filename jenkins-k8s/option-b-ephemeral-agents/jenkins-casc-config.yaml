@@ -81,7 +81,7 @@ data:
 
       extendedEmailPublisher:
         defaultContentType: "text/html"
-        defaultRecipients: "hello.dk@outlook.com"
+        defaultRecipients: "reject@hellodk.io"
         defaultSubject: "Jenkins Build Notification"
         mailAccount:
           smtpHost: "smtp.utilities.svc.cluster.local"

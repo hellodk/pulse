@@ -247,7 +247,7 @@ pipeline {
             }
             emailext(
                 subject: "[JENKINS FAILURE] \${env.JOB_NAME} #\${env.BUILD_NUMBER} — Failed at: \${env.FAILED_STAGE ?: 'Unknown'}",
-                to: 'hello.dk@outlook.com',
+                to: 'reject@hellodk.io',
                 mimeType: 'text/html',
                 body: '${SCRIPT, template="failure-email.groovy"}',
                 attachmentsPattern: "build-\${env.BUILD_NUMBER}-logs.zip"
@@ -270,7 +270,7 @@ pipeline {
             }
             emailext(
                 subject: "[JENKINS SUCCESS] \${env.JOB_NAME} #\${env.BUILD_NUMBER} — All stages passed",
-                to: 'hello.dk@outlook.com',
+                to: 'reject@hellodk.io',
                 mimeType: 'text/html',
                 body: '${SCRIPT, template="success-email.groovy"}',
                 attachmentsPattern: "build-\${env.BUILD_NUMBER}-artifacts.zip"
