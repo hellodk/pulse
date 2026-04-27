@@ -307,7 +307,7 @@
       # Ansible controller (which can reach Jenkins) then push via Ansible copy.
       delegate_to: localhost
       get_url:
-        url: "http://192.168.1.10:30881/jnlpJars/agent.jar"
+        url: "{{ jenkins_url }}/jnlpJars/agent.jar"
         dest: "/tmp/jenkins-agent.jar"
         mode: "0644"
       run_once: true
