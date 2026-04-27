@@ -9,7 +9,7 @@ pipeline {
         JFROG_CREDS   = credentials('jfrog-creds')
         JFROG_URL     = 'http://100.89.50.27:30082/artifactory/example-repo-local'
         NEXUS_URL     = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
-        SIMULATOR     = 'platform=iOS Simulator,name=iPhone 16,OS=latest'
+        SIMULATOR     = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
         REPORTS_DIR   = 'reports'
     }
 

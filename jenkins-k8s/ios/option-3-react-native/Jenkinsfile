@@ -14,17 +14,17 @@ pipeline {
         JFROG_CREDS  = credentials('jfrog-creds')
         JFROG_URL    = 'http://100.89.50.27:30082/artifactory/example-repo-local'
         NEXUS_URL    = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
-        SIMULATOR    = 'platform=iOS Simulator,name=iPhone 16,OS=latest'
+        SIMULATOR    = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
         REPORTS_DIR  = 'reports'
         // nvm-installed node; source nvm in each shell step
-        NVM_DIR      = '/Users/jenkins-agent/.nvm'
+        NVM_DIR      = '/Users/dk/.nvm'
         NODE_VERSION = '20'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git url: 'file:///Users/jenkins-agent/git/mattermost-mobile', branch: 'main'
+                git url: 'file:///Users/dk/jenkins-agent/git/mattermost-mobile', branch: 'main'
                 script {
                     env.GIT_SHA  = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.IPA_NAME = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.ipa"

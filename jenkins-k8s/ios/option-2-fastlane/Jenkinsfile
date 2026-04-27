@@ -13,7 +13,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'file:///Users/jenkins-agent/git/FoodTruck', branch: 'main'
+                git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
             }
         }
 
