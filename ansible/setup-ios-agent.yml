@@ -26,6 +26,7 @@
           -secret {{ jenkins_agent_secret }} \
           -name {{ jenkins_agent_name }} \
           -workDir {{ jenkins_agent_workdir }} \
+          -tunnel {{ jenkins_jnlp_tunnel }} \
           >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
       no_log: true
 
@@ -303,6 +304,8 @@
                   <string>{{ jenkins_agent_name }}</string>
                   <string>-workDir</string>
                   <string>{{ jenkins_agent_workdir }}</string>
+                  <string>-tunnel</string>
+                  <string>{{ jenkins_jnlp_tunnel }}</string>
               </array>
               <key>EnvironmentVariables</key>
               <dict>
@@ -338,6 +341,7 @@
             -secret {{ jenkins_agent_secret }} \
             -name {{ jenkins_agent_name }} \
             -workDir {{ jenkins_agent_workdir }} \
+            -tunnel {{ jenkins_jnlp_tunnel }} \
             >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
           echo "agent started via nohup"
         fi

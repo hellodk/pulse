@@ -1,5 +1,6 @@
 ---
 jenkins_url: "http://100.89.50.27:30881"
+jenkins_jnlp_tunnel: "100.89.50.27:30500"
 jenkins_agent_name: "ios-agent"
 # SECURITY: this secret should be encrypted with ansible-vault rather than
 # stored in plaintext.  Encrypt with:

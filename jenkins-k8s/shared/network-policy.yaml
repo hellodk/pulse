@@ -37,6 +37,15 @@ spec:
           - jenkins-c
           - android-build-agent
           - jfrog
+  # Allow external access to Jenkins controllers via NodePort (JNLP agents + UI)
+  - ports:
+    - port: 8080
+      protocol: TCP
+    - port: 50000
+      protocol: TCP
+    from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
   egress:
   - to:
     - podSelector:

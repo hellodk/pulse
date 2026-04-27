@@ -4,9 +4,9 @@
 # Prerequisites:
 #   1. Generate a Tailscale API key at https://login.tailscale.com/admin/settings/keys
 #      (select "Read/write ACL" scope)
-#   2. Run with:
-#      ansible-playbook -i inventory.ini setup-tailscale-acl.yml \
-#        --extra-vars "tailscale_api_key=tskey-api-..."
+#   2. Export it: export TAILSCALE_PAT=tskey-api-...
+#   3. Run with:
+#      ansible-playbook -i inventory.ini setup-tailscale-acl.yml
 #
 # What this does:
 #   - Fetches current Tailscale ACL for your tailnet
@@ -21,9 +21,8 @@
   gather_facts: false
 
   vars:
-    # Override via --extra-vars "tailscale_api_key=tskey-api-..."
-    tailscale_api_key: "{{ tailscale_api_key | mandatory }}"
-    tailscale_tailnet: "aditya.dk.rock@"
+    tailscale_api_key: "{{ lookup('env', 'TAILSCALE_PAT') }}"
+    tailscale_tailnet: "-"
     cylon_tailscale_ip: "100.89.50.27"
     mac_mini_tailscale_ip: "100.102.68.75"
     tailscale_api: "https://api.tailscale.com/api/v2"
@@ -64,8 +63,7 @@
                     'dst': [
                       cylon_tailscale_ip + ':30881',
                       cylon_tailscale_ip + ':30500'
-                    ],
-                    'comment': 'ios-agent Jenkins HTTP + JNLP'
+                    ]
                   }
                 ] + (acl_doc.acls | default([]))
               ) | unique
@@ -95,11 +93,13 @@
       # Tailscale interface instead of the public relay. Traffic between
       # Mac Mini and Jenkins (192.168.1.10) then stays on the LAN.
       command: tailscale set --advertise-routes=192.168.1.0/24
+      become: true
       register: advertise_result
       changed_when: advertise_result.rc == 0
 
     - name: Enable subnet route acceptance on cylon
       command: tailscale set --accept-routes=true
+      become: true
       changed_when: false
 
     # ── Approve the advertised route via API ──────────────────────────────
@@ -125,7 +125,7 @@
 
     - name: Approve advertised routes on cylon (enables subnet routing for all peers)
       uri:
-        url: "{{ tailscale_api }}/v2/device/{{ cylon_node_id }}/routes"
+        url: "{{ tailscale_api }}/device/{{ cylon_node_id }}/routes"
         method: POST
         headers:
           Authorization: "Bearer {{ tailscale_api_key }}"
@@ -140,7 +140,7 @@
     # ── Tell Mac Mini to accept the subnet route ──────────────────────────
     - name: Accept subnet routes on Mac Mini
       delegate_to: mm1
-      command: tailscale set --accept-routes=true
+      command: /usr/local/bin/tailscale set --accept-routes=true
       changed_when: false
 
     # ── Verify connection status ──────────────────────────────────────────
