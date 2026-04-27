@@ -17,3 +17,11 @@ xcode_path: "/Applications/Xcode.app/Contents/Developer"
 
 # Resolved via: /usr/libexec/java_home -v 21 on mm1
 java_home: "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home"
+
+# Tailscale settings
+tailscale_tailnet: "aditya.dk.rock@"
+# Set tailscale_api_key via --extra-vars or ansible-vault:
+#   ansible-vault encrypt_string 'tskey-api-...' --name tailscale_api_key
+# tailscale_api_key: "tskey-api-SET_ME"
+cylon_tailscale_ip: "100.89.50.27"
+mac_mini_tailscale_ip: "100.102.68.75"
