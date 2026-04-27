@@ -26,14 +26,20 @@ platform :ios do
   # ── Build IPA (unsigned for CI) ──────────────────────────────────────────────
   lane :build do
     increment_build_number(build_number: ENV['BUILD_NUMBER'] || '1')
+    # skip_package_ipa: produce xcarchive only when no signing identity is present.
+    # Remove skip_package_ipa and set export_method once signing is configured.
     gym(
-      scheme:           'Food Truck',
-      configuration:    'Release',
-      export_method:    'development',
-      output_directory: 'build',
-      output_name:      "FoodTruck-#{ENV['BUILD_NUMBER']}.ipa",
-      xcpretty_args:    '--color',
-      skip_codesigning: true
+      scheme:            'Food Truck',
+      configuration:     'Release',
+      output_directory:  'build',
+      output_name:       "FoodTruck-#{ENV['BUILD_NUMBER']}.ipa",
+      xcpretty_args:     '--color',
+      skip_package_ipa:  !ENV['MATCH_PASSWORD'] && !ENV['APPLE_TEAM_ID'],
+      export_options: {
+        method:       'development',
+        signingStyle: 'automatic',
+        compileBitcode: false
+      }
     )
   end
 

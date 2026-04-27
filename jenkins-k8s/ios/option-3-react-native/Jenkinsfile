@@ -89,13 +89,30 @@ pipeline {
                         CODE_SIGNING_ALLOWED=NO \\
                         | xcpretty || true
 
+                    cat > /tmp/ExportOptions.plist << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>method</key><string>development</string>
+    <key>signingStyle</key><string>automatic</string>
+    <key>compileBitcode</key><false/>
+    <key>stripSwiftSymbols</key><true/>
+</dict></plist>
+PLIST
+
                     xcodebuild -exportArchive \\
                         -archivePath build/${APP_NAME}.xcarchive \\
                         -exportPath build/ \\
-                        -exportOptionsPlist ios/ExportOptions-dev.plist \\
+                        -exportOptionsPlist /tmp/ExportOptions.plist \\
                         | xcpretty || true
+
+                    if ! ls build/*.ipa 1>/dev/null 2>&1; then
+                        echo "No IPA produced (signing not configured) — archiving xcarchive"
+                        zip -r build/${APP_NAME}-${BUILD_NUMBER}.xcarchive.zip \\
+                            build/${APP_NAME}.xcarchive
+                    fi
                 """
-                archiveArtifacts artifacts: 'build/*.ipa', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'build/*.ipa,build/*.zip', allowEmptyArchive: true
             }
         }
 
