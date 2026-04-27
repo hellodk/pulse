@@ -47,11 +47,17 @@ data:
     import jenkins.model.*
     import hudson.tasks.Mailer
 
-    def desc = Jenkins.getInstance().getDescriptor("hudson.tasks.Mailer")
+    def inst = Jenkins.getInstance()
+    def desc = inst.getDescriptor("hudson.tasks.Mailer")
     desc.setSmtpHost("smtp.utilities.svc.cluster.local")
     desc.setSmtpPort("25")
+    desc.setReplyToAddress("hello@demomailtrap.co")
+    inst.setSystemMessage("Jenkins CI")
+    // admin address appears as From: in all notification emails
+    inst.setSystemAdminMailAddress("hello@demomailtrap.co")
     desc.save()
-    println "SMTP configured"
+    inst.save()
+    println "SMTP configured — sender: hello@demomailtrap.co"
 
   04-sonarqube.groovy: |
     import jenkins.model.*

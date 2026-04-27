@@ -35,10 +35,16 @@ spec:
             secretKeyRef:
               name: mailtrap-smtp-creds
               key: password
-        - name: ALLOWED_SENDER_DOMAINS
-          value: "hellodk.io jenkins-ci.hellodk.io"
+        # Accept any FROM domain from within the cluster.
+        # sender_canonical_maps rewrites envelope sender to hello@demomailtrap.co upstream.
+        - name: ALLOW_EMPTY_SENDER_DOMAINS
+          value: "1"
         - name: POSTFIX_myhostname
           value: "jenkins-ci.hellodk.io"
+        - name: POSTFIX_myorigin
+          value: "demomailtrap.co"
+        - name: POSTFIX_sender_canonical_maps
+          value: "static:hello@demomailtrap.co"
         readinessProbe:
           tcpSocket:
             port: 25
