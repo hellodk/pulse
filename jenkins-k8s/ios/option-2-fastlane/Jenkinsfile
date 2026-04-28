@@ -2,12 +2,10 @@ pipeline {
     agent { label 'ios-agent' }
 
     environment {
-        NEXUS_CREDS   = credentials('nexus-creds')
-        JFROG_CREDS   = credentials('jfrog-creds')
-        // match encryption passphrase — stored as Jenkins secret text credential
-        MATCH_PASSWORD                = credentials('ios-match-password')
-        FASTLANE_DONT_STORE_PASSWORD  = '1'
-        FASTLANE_SKIP_UPDATE_CHECK    = '1'
+        NEXUS_CREDS                  = credentials('nexus-creds')
+        JFROG_CREDS                  = credentials('jfrog-creds')
+        FASTLANE_DONT_STORE_PASSWORD = '1'
+        FASTLANE_SKIP_UPDATE_CHECK   = '1'
     }
 
     stages {
@@ -88,13 +86,6 @@ pipeline {
 
     post {
         failure {
-            sh """
-                FAILED_STAGE='${env.FAILED_STAGE ?: "Unknown"}' \\
-                BUILD_NUMBER='${BUILD_NUMBER}' \\
-                JOB_NAME='${JOB_NAME}' \\
-                ERROR_SNIPPET='' LOG_TAIL='' \\
-                /opt/llm-analysis.sh || true
-            """
             emailext(
                 subject: "[iOS-Fastlane FAILURE] ${JOB_NAME} #${BUILD_NUMBER}",
                 to: 'reject@hellodk.io',
