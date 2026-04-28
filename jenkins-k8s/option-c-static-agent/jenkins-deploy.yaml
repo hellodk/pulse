@@ -49,6 +49,11 @@ spec:
           value: "safe.directory"
         - name: GIT_CONFIG_VALUE_0
           value: "*"
+        - name: BREVO_SMTP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: brevo-smtp-creds
+              key: password
         volumeMounts:
         - name: jenkins-home
           mountPath: /var/jenkins_home

@@ -46,19 +46,45 @@ data:
   03-smtp.groovy: |
     import jenkins.model.*
     import hudson.tasks.Mailer
+    import hudson.util.Secret
+    import hudson.plugins.emailext.ExtendedEmailPublisherDescriptor
+    import hudson.plugins.emailext.MailAccount
 
     def inst = Jenkins.getInstance()
-    def desc = inst.getDescriptor("hudson.tasks.Mailer")
-    desc.setSmtpHost("smtp.utilities.svc.cluster.local")
-    desc.setSmtpPort("25")
-    desc.setUseSsl(false)
-    desc.setReplyToAddress("a98477001@smtp-brevo.com")
+
+    // ── Mailer plugin (built-in mail step) ──────────────────────────────
+    def mailerDesc = inst.getDescriptor("hudson.tasks.Mailer")
+    mailerDesc.setSmtpHost("smtp-relay.brevo.com")
+    mailerDesc.setSmtpPort("587")
+    mailerDesc.setUseSsl(false)
+    if (mailerDesc.metaClass.respondsTo(mailerDesc, 'setUseTls', boolean)) {
+        mailerDesc.setUseTls(true)
+    }
+    mailerDesc.setSmtpAuthUserName("a98477001@smtp-brevo.com")
+    mailerDesc.setSmtpAuthPassword(Secret.fromString(System.getenv("BREVO_SMTP_PASSWORD") ?: ""))
+    mailerDesc.setReplyToAddress("a98477001@smtp-brevo.com")
+    mailerDesc.save()
+
+    // ── Extended Email Publisher plugin (emailext step) ──────────────────
+    def extDesc = inst.getDescriptorByType(ExtendedEmailPublisherDescriptor)
+    if (extDesc) {
+        def account = new MailAccount()
+        account.setSmtpHost("smtp-relay.brevo.com")
+        account.setSmtpPort("587")
+        account.setUseSsl(false)
+        account.setUseTls(true)
+        account.setSmtpUsername("a98477001@smtp-brevo.com")
+        account.setSmtpPassword(Secret.fromString(System.getenv("BREVO_SMTP_PASSWORD") ?: ""))
+        account.setDefaultAccount(true)
+        extDesc.setMailAccount(account)
+        extDesc.setDefaultReplyTo("a98477001@smtp-brevo.com")
+        extDesc.save()
+    }
+
     inst.setSystemMessage("Jenkins CI")
-    // admin address appears as From: in all notification emails
     inst.setSystemAdminMailAddress("a98477001@smtp-brevo.com")
-    desc.save()
     inst.save()
-    println "SMTP configured — sender: a98477001@smtp-brevo.com"
+    println "SMTP configured — direct Brevo (smtp-relay.brevo.com:587 STARTTLS)"
 
   04-sonarqube.groovy: |
     import jenkins.model.*
