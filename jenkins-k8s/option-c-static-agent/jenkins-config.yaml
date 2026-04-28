@@ -44,41 +44,49 @@ data:
     }
 
   03-smtp.groovy: |
-    import jenkins.model.*
-    import hudson.tasks.Mailer
-    import hudson.util.Secret
-    import hudson.plugins.emailext.ExtendedEmailPublisherDescriptor
-    import hudson.plugins.emailext.MailAccount
+    // No static imports — plugin classes may not be in Groovy classpath at init time.
+    // Use string-based descriptor lookup and dynamic method calls instead.
+    def inst = jenkins.model.Jenkins.getInstance()
+    def brevoPass = System.getenv("BREVO_SMTP_PASSWORD") ?: ""
+    def secret = hudson.util.Secret.fromString(brevoPass)
 
-    def inst = Jenkins.getInstance()
-
-    // ── Mailer plugin (built-in mail step) ──────────────────────────────
+    // ── Mailer plugin ────────────────────────────────────────────────────
     def mailerDesc = inst.getDescriptor("hudson.tasks.Mailer")
-    mailerDesc.setSmtpHost("smtp-relay.brevo.com")
-    mailerDesc.setSmtpPort("587")
-    mailerDesc.setUseSsl(false)
-    if (mailerDesc.metaClass.respondsTo(mailerDesc, 'setUseTls', boolean)) {
-        mailerDesc.setUseTls(true)
+    if (mailerDesc) {
+        mailerDesc.setSmtpHost("smtp-relay.brevo.com")
+        mailerDesc.setSmtpPort("587")
+        mailerDesc.setUseSsl(false)
+        if (mailerDesc.metaClass.respondsTo(mailerDesc, "setUseTls", boolean)) {
+            mailerDesc.setUseTls(true)
+        }
+        mailerDesc.setSmtpAuthUserName("a98477001@smtp-brevo.com")
+        mailerDesc.setSmtpAuthPassword(secret)
+        mailerDesc.setReplyToAddress("a98477001@smtp-brevo.com")
+        mailerDesc.save()
+        println "Mailer configured — smtp-relay.brevo.com:587"
     }
-    mailerDesc.setSmtpAuthUserName("a98477001@smtp-brevo.com")
-    mailerDesc.setSmtpAuthPassword(Secret.fromString(System.getenv("BREVO_SMTP_PASSWORD") ?: ""))
-    mailerDesc.setReplyToAddress("a98477001@smtp-brevo.com")
-    mailerDesc.save()
 
-    // ── Extended Email Publisher plugin (emailext step) ──────────────────
-    def extDesc = inst.getDescriptorByType(ExtendedEmailPublisherDescriptor)
-    if (extDesc) {
-        def account = new MailAccount()
+    // ── Extended Email Publisher plugin ──────────────────────────────────
+    try {
+        def extDescClass = Thread.currentThread().contextClassLoader
+            .loadClass("hudson.plugins.emailext.ExtendedEmailPublisherDescriptor")
+        def extDesc = inst.getDescriptorByType(extDescClass)
+        def accountClass = Thread.currentThread().contextClassLoader
+            .loadClass("hudson.plugins.emailext.MailAccount")
+        def account = accountClass.newInstance()
         account.setSmtpHost("smtp-relay.brevo.com")
         account.setSmtpPort("587")
         account.setUseSsl(false)
         account.setUseTls(true)
         account.setSmtpUsername("a98477001@smtp-brevo.com")
-        account.setSmtpPassword(Secret.fromString(System.getenv("BREVO_SMTP_PASSWORD") ?: ""))
+        account.setSmtpPassword(secret)
         account.setDefaultAccount(true)
         extDesc.setMailAccount(account)
         extDesc.setDefaultReplyTo("a98477001@smtp-brevo.com")
         extDesc.save()
+        println "ExtendedEmail configured — smtp-relay.brevo.com:587"
+    } catch (e) {
+        println "ExtendedEmail config skipped: ${e.message}"
     }
 
     inst.setSystemMessage("Jenkins CI")
