@@ -19,7 +19,7 @@ pipeline {
 
         stage('Bundle Install') {
             steps {
-                sh 'bundle install --path vendor/bundle --jobs 4 --retry 3'
+                sh 'bundle config set --local path vendor/bundle && bundle install --jobs 4 --retry 3'
             }
         }
 

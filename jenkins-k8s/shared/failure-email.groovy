@@ -13,11 +13,11 @@ try { failedStage = build.getEnvironment()['FAILED_STAGE'] ?: "Unknown" } catch(
 
 def llmHtml = ""
 try {
-    def ws = build.workspace
-    if (ws) {
-        def f = ws.child("llm-analysis.md")
-        if (f.exists()) {
-            def md = f.readToString()
+    // WorkflowRun (Pipeline) has no .workspace — read from archived artifact instead
+    def archiveDir = new File(build.getRootDir(), "archive")
+    def f = new File(archiveDir, "llm-analysis.md")
+    if (f.exists()) {
+        def md = f.text
             // closure-based replacements — avoids $1 syntax that breaks SimpleTemplateEngine
             md = md.replaceAll(/(?m)^# (.+)/) { m, g -> "<h1 style='color:#333'>${g}</h1>" }
             md = md.replaceAll(/(?m)^## (.+)/) { m, g -> "<h2 style='color:#1976d2;border-left:4px solid #1976d2;padding-left:8px'>${g}</h2>" }
