@@ -360,6 +360,12 @@
               <dict>
                   <key>JAVA_HOME</key>
                   <string>{{ java_home }}</string>
+                  <key>PATH</key>
+                  <string>{{ ansible_env.HOME }}/.nvm/versions/node/v24.15.0/bin:{{ ansible_env.HOME }}/.rbenv/shims:{{ ansible_env.HOME }}/.rbenv/bin:{{ homebrew_prefix }}/bin:{{ homebrew_prefix }}/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+                  <key>NVM_DIR</key>
+                  <string>{{ ansible_env.HOME }}/.nvm</string>
+                  <key>RBENV_ROOT</key>
+                  <string>{{ ansible_env.HOME }}/.rbenv</string>
               </dict>
               <key>RunAtLoad</key>
               <true/>
