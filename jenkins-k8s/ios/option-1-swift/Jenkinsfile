@@ -1,5 +1,6 @@
 pipeline {
     agent { label 'ios-agent' }
+    options { skipDefaultCheckout(true) }
     environment {
         APP_NAME    = 'FoodTruck'
         SCHEME      = 'Food Truck'

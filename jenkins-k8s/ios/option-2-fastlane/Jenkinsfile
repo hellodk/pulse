@@ -1,5 +1,6 @@
 pipeline {
     agent { label 'ios-agent' }
+    options { skipDefaultCheckout(true) }
 
     environment {
         NEXUS_CREDS                  = credentials('nexus-creds')
