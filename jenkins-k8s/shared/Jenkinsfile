@@ -1,0 +1,284 @@
+pipeline {
+    agent { label 'android-agent' }
+
+    environment {
+        ANDROID_HOME  = '/opt/android-sdk'
+        SONAR_TOKEN   = credentials('sonar-token')
+        NEXUS_CREDS   = credentials('nexus-creds')
+        JFROG_CREDS   = credentials('jfrog-creds')
+        FAILED_STAGE  = ''
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: 'file:///home/dk/Documents/git/sunflower', branch: 'main'
+                script {
+                    env.VERSION_NAME = sh(
+                        script: "git describe --tags --always 2>/dev/null || git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+                    env.APK_FILENAME = "app-debug-${env.VERSION_NAME}.apk"
+                    echo "Building version: ${env.VERSION_NAME}"
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = 'Checkout' } } }
+        }
+
+        stage('Validate Environment') {
+            steps {
+                sh '''
+                    set -e
+                    echo "=== Environment Validation ==="
+                    echo "ANDROID_HOME: $ANDROID_HOME"
+                    [ -d "$ANDROID_HOME" ] || { echo "ANDROID_HOME not found at $ANDROID_HOME"; exit 1; }
+                    java -version 2>&1
+                    ./gradlew --version
+                    curl --version | head -1
+                    semgrep --version
+                    dependency-check.sh --version
+                    jq --version
+                    echo "=== All checks passed ==="
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = 'Validate Environment' } } }
+        }
+
+        stage('Build Debug APK') {
+            steps {
+                sh """
+                    # Inject build version
+                    sed -i "s/versionCode [0-9]*/versionCode ${env.BUILD_NUMBER}/" app/build.gradle || true
+                    sed -i 's/versionName "[^"]*"/versionName "${env.VERSION_NAME}"/' app/build.gradle || true
+                    ./gradlew assembleDebug -PjacocoEnabled=true --stacktrace
+                """
+            }
+            post { failure { script { env.FAILED_STAGE = 'Build Debug APK' } } }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh './gradlew test --stacktrace'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/build/test-results/**/*.xml'
+                }
+                failure { script { env.FAILED_STAGE = 'Unit Tests' } }
+            }
+        }
+
+        stage('SAST') {
+            parallel {
+                stage('Android Lint') {
+                    steps { sh './gradlew lint || true' }
+                }
+                stage('SpotBugs') {
+                    steps { sh './gradlew spotbugsMain || true' }
+                }
+                stage('Semgrep') {
+                    steps {
+                        sh '''
+                            mkdir -p reports
+                            semgrep --config=auto \
+                                    --json \
+                                    --output=reports/semgrep-report.json \
+                                    --exclude="build/" \
+                                    . 2>/dev/null || true
+                            python3 /opt/semgrep-to-html.py \
+                                reports/semgrep-report.json \
+                                reports/semgrep-report.html || true
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    recordIssues(
+                        enabledForFailure: true,
+                        tools: [
+                            spotBugs(pattern: '**/build/reports/spotbugs/*.xml'),
+                            androidLintParser(pattern: '**/build/reports/lint-results*.xml')
+                        ]
+                    )
+                    publishHTML([
+                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'reports', reportFiles: 'semgrep-report.html',
+                        reportName: 'Semgrep SAST Report'
+                    ])
+                }
+                failure { script { env.FAILED_STAGE = 'SAST' } }
+            }
+        }
+
+        stage('SCA / OSA') {
+            steps {
+                sh '''
+                    mkdir -p reports/dependency-check
+                    dependency-check.sh \
+                        --project "sunflower" \
+                        --scan . \
+                        --exclude "**/.git/**" \
+                        --format HTML --format JSON --format XML \
+                        --out reports/dependency-check/ \
+                        --failOnCVSS 9 || true
+                '''
+            }
+            post {
+                always {
+                    dependencyCheckPublisher(
+                        pattern: 'reports/dependency-check/dependency-check-report.xml',
+                        failedTotalCritical: 1,
+                        unstableTotalHigh: 5
+                    )
+                    publishHTML([
+                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'reports/dependency-check',
+                        reportFiles: 'dependency-check-report.html',
+                        reportName: 'OWASP Dependency Check'
+                    ])
+                }
+                failure { script { env.FAILED_STAGE = 'SCA / OSA' } }
+            }
+        }
+
+        stage('License Compliance') {
+            steps {
+                sh '''
+                    ./gradlew generateLicenseReport || true
+                    mkdir -p reports build/reports/licenses
+                    /opt/check-licenses.sh build/reports/licenses/ reports/license-report.html || true
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'reports', reportFiles: 'license-report.html',
+                        reportName: 'License Compliance'
+                    ])
+                }
+                failure { script { env.FAILED_STAGE = 'License Compliance' } }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    try {
+                        withSonarQubeEnv('SonarQube') {
+                            sh """
+                                ./gradlew sonarqube \
+                                    -Dsonar.projectKey=sunflower-android \
+                                    -Dsonar.projectName="Sunflower Android" \
+                                    -Dsonar.coverage.jacoco.xmlReportPaths=app/build/reports/jacoco/testDebugUnitTestCoverage/testDebugUnitTestCoverage.xml \
+                                    -Dsonar.java.binaries=app/build/intermediates/javac \
+                                    || true
+                            """
+                        }
+                    } catch (e) {
+                        echo "SonarQube analysis skipped: ${e.message}"
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = 'SonarQube Analysis' } } }
+        }
+
+        stage('Archive + Nexus Upload') {
+            steps {
+                script {
+                    def apkPath = sh(
+                        script: "find app/build/outputs/apk/debug -name '*.apk' | head -1",
+                        returnStdout: true
+                    ).trim()
+                    sh """
+                        cp "${apkPath}" "${env.APK_FILENAME}"
+                        curl -sf \
+                            -u "${env.NEXUS_CREDS_USR}:${env.NEXUS_CREDS_PSW}" \
+                            --upload-file "${env.APK_FILENAME}" \
+                            "http://nexus.utilities.svc.cluster.local:8081/repository/android-releases/${env.APK_FILENAME}"
+                        echo "Uploaded to Nexus: ${env.APK_FILENAME}"
+                    """
+                }
+                archiveArtifacts artifacts: "${env.APK_FILENAME}", fingerprint: true
+            }
+            post { failure { script { env.FAILED_STAGE = 'Archive + Nexus Upload' } } }
+        }
+
+        stage('JFrog Upload') {
+            steps {
+                sh """
+                    curl -sf \
+                        -u '${env.JFROG_CREDS_USR}:${env.JFROG_CREDS_PSW}' \
+                        -X PUT \
+                        --upload-file "${env.APK_FILENAME}" \
+                        "http://10.105.205.92:8082/artifactory/example-repo-local/android/${env.APK_FILENAME}" \
+                        && echo "Uploaded to JFrog: ${env.APK_FILENAME}"
+                """
+            }
+            post { failure { script { env.FAILED_STAGE = 'JFrog Upload' } } }
+        }
+    }
+
+    post {
+        failure {
+            script {
+                def failedAt = env.FAILED_STAGE ?: 'Unknown'
+                sh """
+                    FAILED_STAGE='${failedAt}' \
+                    ERROR_SNIPPET='' \
+                    LOG_TAIL='' \
+                    BUILD_NUMBER='${env.BUILD_NUMBER}' \
+                    JOB_NAME='${env.JOB_NAME}' \
+                    /opt/llm-analysis.sh
+                """
+
+                sh """
+                    mkdir -p build-logs
+                    cp llm-analysis.md build-logs/ 2>/dev/null || true
+                    find . -path '*/test-results/*.xml' | head -50 | while read f; do
+                        cp --parents "\$f" build-logs/
+                    done
+                    find reports -name '*.html' 2>/dev/null | while read f; do
+                        cp --parents "\$f" build-logs/
+                    done
+                    zip -r build-${env.BUILD_NUMBER}-logs.zip build-logs/ 2>/dev/null || true
+                """
+            }
+            emailext(
+                subject: "[JENKINS FAILURE] \${env.JOB_NAME} #\${env.BUILD_NUMBER} — Failed at: \${env.FAILED_STAGE ?: 'Unknown'}",
+                to: 'reject@hellodk.io',
+                mimeType: 'text/html',
+                body: '${SCRIPT, template="failure-email.groovy"}',
+                attachmentsPattern: "build-\${env.BUILD_NUMBER}-logs.zip"
+            )
+        }
+
+        success {
+            script {
+                sh """
+                    mkdir -p build-artifacts
+                    cp '${env.APK_FILENAME}' build-artifacts/ 2>/dev/null || true
+                    find . -path '*/test-results/*.xml' | head -50 | while read f; do
+                        cp --parents "\$f" build-artifacts/
+                    done
+                    cp reports/semgrep-report.html build-artifacts/ 2>/dev/null || true
+                    cp reports/dependency-check/dependency-check-report.html build-artifacts/ 2>/dev/null || true
+                    cp reports/license-report.html build-artifacts/ 2>/dev/null || true
+                    zip -r build-${env.BUILD_NUMBER}-artifacts.zip build-artifacts/ 2>/dev/null || true
+                """
+            }
+            emailext(
+                subject: "[JENKINS SUCCESS] \${env.JOB_NAME} #\${env.BUILD_NUMBER} — All stages passed",
+                to: 'reject@hellodk.io',
+                mimeType: 'text/html',
+                body: '${SCRIPT, template="success-email.groovy"}',
+                attachmentsPattern: "build-\${env.BUILD_NUMBER}-artifacts.zip"
+            )
+        }
+
+        cleanup {
+            deleteDir()
+        }
+    }
+}

@@ -1,0 +1,78 @@
+pipeline {
+    agent { label 'ios-agent' }
+    environment {
+        APP_NAME    = 'Mattermost'
+        SCHEME      = 'Mattermost'
+        RN_WS       = 'ios/Mattermost.xcworkspace'
+        NEXUS_CREDS = credentials('nexus-creds')
+        JFROG_CREDS = credentials('jfrog-creds')
+        JFROG_URL   = 'http://100.89.50.27:30082/artifactory/example-repo-local'
+        NEXUS_URL   = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
+        SIMULATOR   = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
+        REPORTS_DIR = 'reports'
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: 'file:///Users/dk/jenkins-agent/git/mattermost-mobile', branch: 'main'
+                script { env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim() }
+            }
+        }
+        stage('Validate') {
+            steps { sh 'source ~/.bashrc 2>/dev/null || true; node --version; npm --version; pod --version; xcodebuild -version' }
+        }
+        stage('JS Dependencies') {
+            steps { sh 'source ~/.bashrc 2>/dev/null || true; npm ci --prefer-offline' }
+        }
+        stage('iOS Native Dependencies') {
+            steps { sh 'source ~/.bashrc 2>/dev/null || true; cd ios && pod install --repo-update' }
+        }
+        stage('Build Archive') {
+            steps {
+                sh 'mkdir -p build ${REPORTS_DIR}'
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -workspace ${RN_WS} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
+                sh 'zip -r build/${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip build/${APP_NAME}.xcarchive || true'
+                archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
+            }
+        }
+        stage('Tests') {
+            parallel {
+                stage('JS Tests') {
+                    steps {
+                        sh 'source ~/.bashrc 2>/dev/null || true; mkdir -p reports; npm test -- --ci --reporters=jest-junit --outputFile=reports/jest-results.xml || true'
+                        junit allowEmptyResults: true, testResults: 'reports/jest-results.xml'
+                    }
+                }
+                stage('Native Tests') {
+                    steps {
+                        sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -workspace ${RN_WS} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/xcode-test-results.xml || true'
+                        junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/xcode-test-results.xml"
+                    }
+                }
+            }
+        }
+        stage('SAST') {
+            parallel {
+                stage('ESLint')    { steps { sh 'source ~/.bashrc 2>/dev/null; mkdir -p reports; npx eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file reports/eslint.json || true' } }
+                stage('SwiftLint') { steps { sh 'source ~/.bashrc 2>/dev/null; swiftlint lint --path ios --reporter html > ${REPORTS_DIR}/swiftlint.html || true' } }
+            }
+        }
+        stage('Upload') {
+            steps {
+                script {
+                    def a = sh(script: 'find build -name "*.zip" -o -name "*.ipa" | head -1', returnStdout: true).trim()
+                    def artifact = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.zip"
+                    if (a) {
+                        sh 'curl -sf -u "${NEXUS_CREDS_USR}:${NEXUS_CREDS_PSW}" --upload-file \'${a}\' "${NEXUS_URL}/${artifact}" && echo "Nexus ok" || true'
+                        sh 'curl -sf -u "${JFROG_CREDS_USR}:${JFROG_CREDS_PSW}" -X PUT --upload-file \'${a}\' "${JFROG_URL}/ios/${artifact}" && echo "JFrog ok" || true'
+                    }
+                }
+            }
+        }
+    }
+    post {
+        failure { emailext(subject: "[iOS-RN FAILURE] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="failure-email.groovy"}') }
+        success { emailext(subject: "[iOS-RN SUCCESS] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="success-email.groovy"}') }
+        cleanup { sh 'rm -rf node_modules ios/Pods || true'; deleteDir() }
+    }
+}

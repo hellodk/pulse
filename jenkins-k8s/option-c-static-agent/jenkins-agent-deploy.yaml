@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: android-build-agent
+  namespace: utilities
+  labels:
+    app: android-build-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: android-build-agent
+  template:
+    metadata:
+      labels:
+        app: android-build-agent
+    spec:
+      containers:
+      - name: agent
+        image: hellodk/android-jenkins-agent:latest
+        command:
+        - java
+        - -jar
+        - /usr/share/jenkins/agent.jar
+        - -url
+        - http://10.105.34.30:8080
+        - -secret
+        - $(JENKINS_SECRET)
+        - -name
+        - android-agent
+        - -workDir
+        - /home/jenkins/agent
+        env:
+        - name: JENKINS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: jenkins-agent-secret
+              key: JENKINS_SECRET
+        - name: ANDROID_HOME
+          value: "/opt/android-sdk"
+        - name: GIT_CONFIG_COUNT
+          value: "1"
+        - name: GIT_CONFIG_KEY_0
+          value: "safe.directory"
+        - name: GIT_CONFIG_VALUE_0
+          value: "*"
+        volumeMounts:
+        - name: gradle-cache
+          mountPath: /root/.gradle
+        - name: git-repo
+          mountPath: /home/dk/Documents/git/testing-grounds
+          readOnly: true
+        - name: sunflower
+          mountPath: /home/dk/Documents/git/sunflower
+          readOnly: true
+        - name: gitconfig
+          mountPath: /home/jenkins/.gitconfig
+          subPath: gitconfig
+        - name: sdk-platforms
+          mountPath: /opt/android-sdk/platforms
+        - name: sdk-build-tools
+          mountPath: /opt/android-sdk/build-tools
+        - name: sdk-platform-tools
+          mountPath: /opt/android-sdk/platform-tools
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+      volumes:
+      - name: gradle-cache
+        persistentVolumeClaim:
+          claimName: gradle-cache
+      - name: git-repo
+        hostPath:
+          path: /home/dk/Documents/git/testing-grounds
+          type: Directory
+      - name: sunflower
+        hostPath:
+          path: /home/dk/Documents/git/sunflower
+          type: Directory
+      - name: gitconfig
+        configMap:
+          name: gitconfig-safe
+      - name: sdk-platforms
+        hostPath:
+          path: /home/dk/android-sdk-extra/platforms
+          type: Directory
+      - name: sdk-build-tools
+        hostPath:
+          path: /home/dk/android-sdk-extra/build-tools
+          type: Directory
+      - name: sdk-platform-tools
+        hostPath:
+          path: /home/dk/android-sdk-extra/platform-tools
+          type: Directory

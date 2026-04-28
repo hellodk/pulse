@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-c
+  namespace: utilities
+  labels:
+    app: jenkins-c
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins-c
+  template:
+    metadata:
+      labels:
+        app: jenkins-c
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      initContainers:
+      - name: git-config
+        image: busybox:1.28
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - |
+          printf '[safe]\n\tdirectory = *\n' > /var/jenkins_home/.gitconfig
+          chown 1000:1000 /var/jenkins_home/.gitconfig
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+      containers:
+      - name: jenkins
+        image: hellodk/jenkins-c:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 50000
+          name: jnlp
+        env:
+        - name: JAVA_OPTS
+          value: "-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true"
+        - name: GIT_CONFIG_COUNT
+          value: "1"
+        - name: GIT_CONFIG_KEY_0
+          value: "safe.directory"
+        - name: GIT_CONFIG_VALUE_0
+          value: "*"
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+        - name: init-scripts
+          mountPath: /var/jenkins_home/init.groovy.d
+        - name: email-templates
+          mountPath: /var/jenkins_home/email-templates
+        - name: git-repo
+          mountPath: /home/dk/Documents/git/testing-grounds
+          readOnly: true
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "3Gi"
+            cpu: "2"
+        readinessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+      volumes:
+      - name: jenkins-home
+        persistentVolumeClaim:
+          claimName: jenkins-c-home
+      - name: init-scripts
+        configMap:
+          name: jenkins-c-init
+      - name: email-templates
+        configMap:
+          name: jenkins-email-templates
+      - name: git-repo
+        hostPath:
+          path: /home/dk/Documents/git/testing-grounds
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-c
+  namespace: utilities
+spec:
+  selector:
+    app: jenkins-c
+  type: NodePort
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30881
+  - name: jnlp
+    port: 50000
+    targetPort: 50000
+    nodePort: 30500

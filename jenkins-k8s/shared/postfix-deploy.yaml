@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postfix
+  namespace: utilities
+  labels:
+    app: postfix
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postfix
+  template:
+    metadata:
+      labels:
+        app: postfix
+    spec:
+      containers:
+      - name: postfix
+        image: boky/postfix:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 25
+        env:
+        # boky/postfix relay configuration — STARTTLS to Mailtrap on port 587
+        - name: RELAYHOST
+          value: "[live.smtp.mailtrap.io]:587"
+        - name: RELAYHOST_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mailtrap-smtp-creds
+              key: username
+        - name: RELAYHOST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mailtrap-smtp-creds
+              key: password
+        # Accept any FROM domain from within the cluster.
+        # sender_canonical_maps rewrites envelope sender to hello@demomailtrap.co upstream.
+        - name: ALLOW_EMPTY_SENDER_DOMAINS
+          value: "1"
+        - name: POSTFIX_myhostname
+          value: "jenkins-ci.hellodk.io"
+        - name: POSTFIX_myorigin
+          value: "demomailtrap.co"
+        - name: POSTFIX_sender_canonical_maps
+          value: "static:hello@demomailtrap.co"
+        readinessProbe:
+          tcpSocket:
+            port: 25
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 25
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smtp
+  namespace: utilities
+spec:
+  selector:
+    app: postfix
+  ports:
+  - port: 25
+    targetPort: 25
+    protocol: TCP

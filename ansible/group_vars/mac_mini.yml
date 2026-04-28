@@ -1,0 +1,28 @@
+---
+jenkins_url: "http://100.89.50.27:30881"
+jenkins_jnlp_tunnel: "100.89.50.27:30500"
+jenkins_agent_name: "ios-agent"
+# SECURITY: this secret should be encrypted with ansible-vault rather than
+# stored in plaintext.  Encrypt with:
+#   ansible-vault encrypt_string '<secret>' --name jenkins_agent_secret
+# and replace the value below with the resulting !vault block.
+jenkins_agent_secret: "d819a1bd31d34e20d87a40664b327a99402ce20b2a7f814905d815f628d29125"
+jenkins_agent_workdir: "/Users/dk/jenkins-agent"
+# Jar lives inside the work directory to keep all agent files together.
+jenkins_agent_jar: "/Users/dk/jenkins-agent/agent.jar"
+
+homebrew_prefix: "/opt/homebrew"
+ruby_version: "3.2.2"
+
+xcode_path: "/Applications/Xcode.app/Contents/Developer"
+
+# Resolved via: /usr/libexec/java_home -v 21 on mm1
+java_home: "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home"
+
+# Tailscale settings
+tailscale_tailnet: "aditya.dk.rock@"
+# Set tailscale_api_key via --extra-vars or ansible-vault:
+#   ansible-vault encrypt_string 'tskey-api-...' --name tailscale_api_key
+# tailscale_api_key: "tskey-api-SET_ME"
+cylon_tailscale_ip: "100.89.50.27"
+mac_mini_tailscale_ip: "100.102.68.75"

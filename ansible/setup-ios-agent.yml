@@ -1,0 +1,422 @@
+---
+# Variables are loaded automatically from group_vars/mac_mini.yml for the
+# [mac_mini] inventory group.  See also inventory.ini.
+#
+# Required group_vars keys:
+#   xcode_path, homebrew_prefix, ruby_version,
+#   jenkins_url, jenkins_agent_name, jenkins_agent_secret,
+#   jenkins_agent_workdir, jenkins_agent_jar
+#
+# Run with:
+#   ansible-playbook -i inventory.ini setup-ios-agent.yml --ask-become-pass
+
+- name: Configure Mac Mini as iOS Jenkins JNLP agent
+  hosts: mac_mini
+  gather_facts: true
+
+  handlers:
+    - name: Restart Jenkins agent
+      # macOS 15: launchctl load/unload removed; bootstrap requires GUI session.
+      # Kill the running process and let nohup restart it (or launchd on next login).
+      shell: |
+        pkill -f "agent.jar" 2>/dev/null || true
+        sleep 2
+        nohup {{ java_home }}/bin/java -jar {{ jenkins_agent_jar }} \
+          -url {{ jenkins_url }} \
+          -secret {{ jenkins_agent_secret }} \
+          -name {{ jenkins_agent_name }} \
+          -workDir {{ jenkins_agent_workdir }} \
+          -tunnel {{ jenkins_jnlp_tunnel }} \
+          >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
+      no_log: true
+
+  tasks:
+
+    # ── Power management — prevent sleep on headless CI server ────────────
+    - name: Disable system sleep (never sleep on AC power)
+      become: true
+      command: pmset -a sleep 0
+      changed_when: false
+
+    - name: Disable disk sleep
+      become: true
+      command: pmset -a disksleep 0
+      changed_when: false
+
+    - name: Disable display sleep
+      become: true
+      command: pmset -a displaysleep 0
+      changed_when: false
+
+    - name: Disable hibernation (no RAM→disk dump before sleep)
+      become: true
+      command: pmset -a hibernate 0
+      changed_when: false
+
+    - name: Disable standby mode
+      become: true
+      command: pmset -a standby 0
+      changed_when: false
+
+    - name: Disable auto power-off
+      become: true
+      command: pmset -a autopoweroff 0
+      changed_when: false
+
+    - name: Disable Power Nap (background wake for backups/email)
+      become: true
+      command: pmset -a powernap 0
+      changed_when: false
+
+    - name: Enable Wake on LAN / Magic Packet (allows remote wake)
+      become: true
+      command: pmset -a womp 1
+      changed_when: false
+
+    - name: Keep TCP connections alive during any residual sleep
+      become: true
+      command: pmset -a tcpkeepalive 1
+      changed_when: false
+
+    - name: Disable App Nap (prevents background processes being throttled)
+      # Applies per-user. Does not require sudo.
+      command: defaults write NSGlobalDomain NSAppSleepDisabled -bool YES
+      changed_when: false
+
+    - name: Verify power settings
+      command: pmset -g
+      register: pmset_output
+      changed_when: false
+
+    - name: Print power settings
+      debug:
+        msg: "{{ pmset_output.stdout_lines }}"
+
+    # ── Xcode ─────────────────────────────────────────────────────────────
+    - name: Get current xcode-select developer path
+      command: xcode-select -p
+      register: xcode_current
+      changed_when: false
+
+    - name: Point xcode-select at Xcode.app
+      become: true
+      command: xcode-select -s {{ xcode_path }}
+      when: xcode_current.stdout | trim != xcode_path
+      # Only runs (and marks changed) when the path actually differs.
+
+    - name: Accept Xcode license
+      become: true
+      # xcodebuild -license accept exits 0 whether or not the license was
+      # already accepted.  Use -checkFirstLaunchStatus to detect the need.
+      command: xcodebuild -license accept
+      register: xcode_license
+      # Suppress failure in case the license was already accepted (rc is
+      # still 0 in that case, but some Xcode versions exit non-zero when
+      # already accepted; we do not want to abort the play either way).
+      failed_when: false
+      changed_when: false   # purely a one-time administrative step; not
+                             # worth attempting to detect true change
+
+    - name: Verify xcodebuild is accessible
+      command: xcodebuild -version
+      register: xcode_version
+      changed_when: false
+
+    - name: Print Xcode version
+      debug:
+        msg: "{{ xcode_version.stdout_lines | first | default('unknown') }}"
+
+    # ── Homebrew ──────────────────────────────────────────────────────────
+    - name: Check if Homebrew is installed
+      stat:
+        path: "{{ homebrew_prefix }}/bin/brew"
+      register: brew_stat
+
+    - name: Install Homebrew
+      # NONINTERACTIVE=1 suppresses all prompts.
+      # The guard (brew_stat.stat.exists) makes this task skip on re-runs.
+      shell: >
+        /bin/bash -c
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      environment:
+        NONINTERACTIVE: "1"
+      when: not brew_stat.stat.exists
+      # changed_when omitted intentionally: shell tasks default to changed
+      # when they run, which is correct — Homebrew was genuinely installed.
+
+    - name: Add Homebrew to PATH in .zprofile
+      # lineinfile is idempotent (will not add a duplicate line), so no
+      # when: guard is strictly required, but we skip on re-runs as a
+      # courtesy to avoid unnecessary file-stat work.
+      lineinfile:
+        path: "/Users/{{ ansible_user }}/.zprofile"
+        line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+        create: true
+        mode: "0644"
+      when: not brew_stat.stat.exists
+
+    - name: Verify brew is available
+      command: "{{ homebrew_prefix }}/bin/brew --version"
+      changed_when: false
+
+    # ── SwiftLint ─────────────────────────────────────────────────────────
+    - name: Install SwiftLint via Homebrew
+      community.general.homebrew:
+        name: swiftlint
+        state: present
+        path: "{{ homebrew_prefix }}/bin"
+
+    # ── rbenv + Ruby ──────────────────────────────────────────────────────
+    - name: Install rbenv and ruby-build via Homebrew
+      community.general.homebrew:
+        name:
+          - rbenv
+          - ruby-build
+        state: present
+        path: "{{ homebrew_prefix }}/bin"
+
+    - name: Add rbenv init to .zprofile
+      lineinfile:
+        path: "/Users/{{ ansible_user }}/.zprofile"
+        line: 'eval "$(rbenv init - zsh)"'
+        create: true
+        mode: "0644"
+
+    - name: Check if Ruby {{ ruby_version }} is installed via rbenv
+      # Use bash (matches Ansible's default shell executor) for rbenv init.
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv versions --bare | grep -qx "{{ ruby_version }}"
+      register: ruby_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install Ruby {{ ruby_version }} via rbenv
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv install {{ ruby_version }}
+      when: ruby_installed.rc != 0
+
+    - name: Get current rbenv global Ruby version
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv global
+      register: rbenv_global_current
+      changed_when: false
+
+    - name: Set Ruby {{ ruby_version }} as global default
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        rbenv global {{ ruby_version }}
+      when: rbenv_global_current.stdout | trim != ruby_version
+
+    # ── Fastlane ──────────────────────────────────────────────────────────
+    - name: Check if Fastlane is installed
+      # gem list -i exits 0 (stdout: "true") if found, exits 1 if not.
+      # Rely on rc rather than stdout to avoid whitespace/newline surprises.
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem list fastlane -i
+      register: fastlane_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install Fastlane and bundler gems
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem install fastlane bundler xcpretty --no-document
+      when: fastlane_installed.rc != 0
+
+    # ── nvm + Node.js (required for React Native pipelines) ──────────────
+    - name: Check if nvm is installed
+      shell: "[ -s {{ ansible_env.HOME }}/.nvm/nvm.sh ] && echo yes || echo no"
+      register: nvm_check
+      changed_when: false
+
+    - name: Install nvm
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+      when: nvm_check.stdout == "no"
+
+    - name: Install Node.js LTS via nvm
+      shell: |
+        export NVM_DIR="{{ ansible_env.HOME }}/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install --lts
+        nvm alias default node
+        node --version
+      register: node_install
+      changed_when: '"already installed" not in node_install.stdout'
+
+    - name: Add nvm init to .zprofile for Jenkins agent shell
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zprofile"
+        line: |
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        create: true
+        mode: "0644"
+
+    # ── CocoaPods (required for React Native iOS native deps) ─────────────
+    - name: Check if CocoaPods is installed
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem list cocoapods -i
+      register: cocoapods_check
+      failed_when: false
+      changed_when: false
+
+    - name: Install CocoaPods gem
+      shell: |
+        export PATH="{{ homebrew_prefix }}/bin:$PATH"
+        export RBENV_ROOT="${HOME}/.rbenv"
+        eval "$(rbenv init - bash)"
+        gem install cocoapods --no-document
+      when: cocoapods_check.rc != 0
+
+    # ── Resolve Java 21 path ──────────────────────────────────────────────
+    - name: Print resolved Java home
+      # java_home is defined in group_vars/mac_mini.yml — resolved once via
+      # /usr/libexec/java_home -v 21 and hardcoded for idempotent runs.
+      debug:
+        msg: "Java 21 home: {{ java_home }}"
+
+    # ── Jenkins agent jar ─────────────────────────────────────────────────
+    - name: Create Jenkins agent work directory
+      file:
+        path: "{{ jenkins_agent_workdir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download Jenkins agent jar to controller
+      # Mac Mini cannot reach the Jenkins NodePort directly.  Download on the
+      # Ansible controller (which can reach Jenkins) then push via Ansible copy.
+      delegate_to: localhost
+      get_url:
+        url: "{{ jenkins_url }}/jnlpJars/agent.jar"
+        dest: "/tmp/jenkins-agent.jar"
+        mode: "0644"
+      run_once: true
+
+    - name: Copy Jenkins agent jar to Mac Mini
+      copy:
+        src: "/tmp/jenkins-agent.jar"
+        dest: "{{ jenkins_agent_jar }}"
+        mode: "0644"
+      notify: Restart Jenkins agent
+
+    # ── launchd plist ─────────────────────────────────────────────────────
+    - name: Ensure ~/Library/LaunchAgents directory exists
+      # This directory is usually present but is not guaranteed on all user
+      # profiles, especially freshly provisioned accounts.
+      file:
+        path: "/Users/{{ ansible_user }}/Library/LaunchAgents"
+        state: directory
+        mode: "0755"
+
+    - name: Deploy Jenkins agent launchd plist
+      copy:
+        dest: "/Users/{{ ansible_user }}/Library/LaunchAgents/com.jenkins.ios-agent.plist"
+        mode: "0644"
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Label</key>
+              <string>com.jenkins.ios-agent</string>
+              <key>ProgramArguments</key>
+              <array>
+                  <string>{{ java_home }}/bin/java</string>
+                  <string>-jar</string>
+                  <string>{{ jenkins_agent_jar }}</string>
+                  <string>-url</string>
+                  <string>{{ jenkins_url }}</string>
+                  <string>-secret</string>
+                  <string>{{ jenkins_agent_secret }}</string>
+                  <string>-name</string>
+                  <string>{{ jenkins_agent_name }}</string>
+                  <string>-workDir</string>
+                  <string>{{ jenkins_agent_workdir }}</string>
+                  <string>-tunnel</string>
+                  <string>{{ jenkins_jnlp_tunnel }}</string>
+              </array>
+              <key>EnvironmentVariables</key>
+              <dict>
+                  <key>JAVA_HOME</key>
+                  <string>{{ java_home }}</string>
+              </dict>
+              <key>RunAtLoad</key>
+              <true/>
+              <key>KeepAlive</key>
+              <true/>
+              <key>StandardOutPath</key>
+              <string>{{ jenkins_agent_workdir }}/agent.log</string>
+              <key>StandardErrorPath</key>
+              <string>{{ jenkins_agent_workdir }}/agent-error.log</string>
+              <key>ThrottleInterval</key>
+              <integer>10</integer>
+          </dict>
+          </plist>
+      notify: Restart Jenkins agent
+
+    - name: Start Jenkins agent directly (SSH session — launchd GUI domain unavailable)
+      # macOS 15 removed launchctl load/unload. launchctl bootstrap requires a GUI
+      # session. Over SSH, start the agent directly with nohup. The plist's
+      # RunAtLoad=true + KeepAlive=true will take over on next GUI login/reboot.
+      shell: |
+        if launchctl list com.jenkins.ios-agent > /dev/null 2>&1; then
+          echo "service already loaded via launchd"
+        elif pgrep -f "agent.jar" > /dev/null 2>&1; then
+          echo "agent process already running"
+        else
+          nohup {{ java_home }}/bin/java -jar {{ jenkins_agent_jar }} \
+            -url {{ jenkins_url }} \
+            -secret {{ jenkins_agent_secret }} \
+            -name {{ jenkins_agent_name }} \
+            -workDir {{ jenkins_agent_workdir }} \
+            -tunnel {{ jenkins_jnlp_tunnel }} \
+            >> {{ jenkins_agent_workdir }}/agent.log 2>&1 &
+          echo "agent started via nohup"
+        fi
+      changed_when: false
+      no_log: true
+
+    - name: Check Jenkins agent process is running
+      shell: pgrep -fa "agent.jar" 2>/dev/null || echo "not running"
+      register: agent_proc
+      changed_when: false
+
+    - name: Print agent process status
+      debug:
+        msg: "{{ agent_proc.stdout }}"
+
+    # ── Smoke test ────────────────────────────────────────────────────────
+    - name: Wait for agent log to show Connected
+      wait_for:
+        path: "{{ jenkins_agent_workdir }}/agent.log"
+        search_regex: "Connected"
+        timeout: 60
+      register: agent_connected
+      failed_when: false
+      # If the log file does not appear within 60 s, agent_connected will
+      # lack a .matched key — use default(false) to guard against that.
+
+    - name: Agent connection status
+      debug:
+        msg: "{{ 'iOS agent CONNECTED to Jenkins C' if agent_connected.matched | default(false) else 'Agent log not yet showing Connected — check manually' }}"

@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-b
+  namespace: utilities
+  labels:
+    app: jenkins-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins-b
+  template:
+    metadata:
+      labels:
+        app: jenkins-b
+    spec:
+      serviceAccountName: jenkins
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      containers:
+      - name: jenkins
+        image: hellodk/jenkins-b:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 50000
+          name: jnlp
+        env:
+        - name: JAVA_OPTS
+          value: >-
+            -Djenkins.install.runSetupWizard=false
+            -Dcasc.jenkins.config=/var/jenkins_casc/
+        - name: CASC_JENKINS_CONFIG
+          value: "/var/jenkins_casc/"
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+        - name: casc-config
+          mountPath: /var/jenkins_casc
+        - name: email-templates
+          mountPath: /var/jenkins_home/email-templates
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "3Gi"
+            cpu: "2"
+        readinessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /login
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+      volumes:
+      - name: jenkins-home
+        persistentVolumeClaim:
+          claimName: jenkins-b-home
+      - name: casc-config
+        configMap:
+          name: jenkins-b-casc
+      - name: email-templates
+        configMap:
+          name: jenkins-email-templates
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-b
+  namespace: utilities
+spec:
+  selector:
+    app: jenkins-b
+  type: NodePort
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30880
+  - name: jnlp
+    port: 50000
+    targetPort: 50000

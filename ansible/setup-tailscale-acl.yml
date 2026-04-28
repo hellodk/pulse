@@ -1,0 +1,172 @@
+---
+# Configure Tailscale ACL and direct-connection settings for Jenkins iOS agent.
+#
+# Prerequisites:
+#   1. Generate a Tailscale API key at https://login.tailscale.com/admin/settings/keys
+#      (select "Read/write ACL" scope)
+#   2. Export it: export TAILSCALE_PAT=tskey-api-...
+#   3. Run with:
+#      ansible-playbook -i inventory.ini setup-tailscale-acl.yml
+#
+# What this does:
+#   - Fetches current Tailscale ACL for your tailnet
+#   - Adds accept rules: mac_mini → cylon ports 30881 (Jenkins) and 30500 (JNLP)
+#   - Advertises 192.168.1.0/24 subnet from cylon so Mac Mini traffic stays
+#     on LAN (no DERP relay for all intra-LAN communication)
+#   - Verifies connection is direct after changes
+
+- name: Configure Tailscale ACL and routing for Jenkins iOS agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    tailscale_api_key: "{{ lookup('env', 'TAILSCALE_PAT') }}"
+    tailscale_tailnet: "-"
+    cylon_tailscale_ip: "100.89.50.27"
+    mac_mini_tailscale_ip: "100.102.68.75"
+    tailscale_api: "https://api.tailscale.com/api/v2"
+
+  tasks:
+
+    # ── Fetch current ACL ─────────────────────────────────────────────────
+    - name: Fetch current Tailscale ACL
+      uri:
+        url: "{{ tailscale_api }}/tailnet/{{ tailscale_tailnet }}/acl"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ tailscale_api_key }}"
+          Accept: "application/json"
+        return_content: true
+        status_code: 200
+      register: current_acl
+
+    - name: Parse current ACL
+      set_fact:
+        acl_doc: "{{ current_acl.json }}"
+
+    - name: Show current ACL
+      debug:
+        msg: "Current ACL has {{ (acl_doc.acls | default([])) | length }} rules"
+
+    # ── Build updated ACL with iOS agent rules ────────────────────────────
+    - name: Build new ACL rules (prepend ios-agent rules)
+      set_fact:
+        new_acl: >-
+          {{
+            acl_doc | combine({
+              'acls': (
+                [
+                  {
+                    'action': 'accept',
+                    'src': [mac_mini_tailscale_ip],
+                    'dst': [
+                      cylon_tailscale_ip + ':30881',
+                      cylon_tailscale_ip + ':30500'
+                    ]
+                  }
+                ] + (acl_doc.acls | default([]))
+              ) | unique
+            })
+          }}
+
+    # ── Push updated ACL ──────────────────────────────────────────────────
+    - name: Push updated ACL to Tailscale
+      uri:
+        url: "{{ tailscale_api }}/tailnet/{{ tailscale_tailnet }}/acl"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ tailscale_api_key }}"
+          Content-Type: "application/json"
+        body: "{{ new_acl | to_json }}"
+        body_format: json
+        status_code: 200
+      register: acl_update
+
+    - name: Confirm ACL updated
+      debug:
+        msg: "ACL updated — {{ (acl_update.json.acls | default([])) | length }} rules now active"
+
+    # ── Advertise LAN subnet from cylon to avoid DERP relay ───────────────
+    - name: Advertise 192.168.1.0/24 subnet from cylon via Tailscale
+      # This tells the Mac Mini to route 192.168.1.x traffic through cylon's
+      # Tailscale interface instead of the public relay. Traffic between
+      # Mac Mini and Jenkins (192.168.1.10) then stays on the LAN.
+      command: tailscale set --advertise-routes=192.168.1.0/24
+      become: true
+      register: advertise_result
+      changed_when: advertise_result.rc == 0
+
+    - name: Enable subnet route acceptance on cylon
+      command: tailscale set --accept-routes=true
+      become: true
+      changed_when: false
+
+    # ── Approve the advertised route via API ──────────────────────────────
+    - name: Get cylon's Tailscale node ID
+      uri:
+        url: "{{ tailscale_api }}/tailnet/{{ tailscale_tailnet }}/devices"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ tailscale_api_key }}"
+        return_content: true
+        status_code: 200
+      register: devices_resp
+
+    - name: Find cylon node ID
+      set_fact:
+        cylon_node_id: >-
+          {{
+            (devices_resp.json.devices
+              | selectattr('addresses', 'contains', cylon_tailscale_ip)
+              | map(attribute='id')
+              | first)
+          }}
+
+    - name: Approve advertised routes on cylon (enables subnet routing for all peers)
+      uri:
+        url: "{{ tailscale_api }}/device/{{ cylon_node_id }}/routes"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ tailscale_api_key }}"
+          Content-Type: "application/json"
+        body:
+          routes:
+            - "192.168.1.0/24"
+        body_format: json
+        status_code: 200
+      ignore_errors: true
+
+    # ── Tell Mac Mini to accept the subnet route ──────────────────────────
+    - name: Accept subnet routes on Mac Mini
+      delegate_to: mm1
+      command: /usr/local/bin/tailscale set --accept-routes=true
+      changed_when: false
+
+    # ── Verify connection status ──────────────────────────────────────────
+    - name: Wait 5 seconds for Tailscale to apply changes
+      pause:
+        seconds: 5
+
+    - name: Check Mac Mini connection mode (direct vs relay)
+      command: tailscale status --json
+      register: ts_status
+      changed_when: false
+
+    - name: Report Mac Mini relay status
+      vars:
+        peer_info: >-
+          {{
+            (ts_status.stdout | from_json).Peer.values()
+            | selectattr('TailscaleIPs', 'contains', mac_mini_tailscale_ip)
+            | list | first | default({})
+          }}
+      debug:
+        msg: >-
+          Mac Mini relay: {{ peer_info.Relay | default('none — direct') }}.
+          {% if not peer_info.Relay | default('') %}
+          Direct connection established — no DERP bandwidth used.
+          {% else %}
+          Still via relay. Direct path will activate once subnet route propagates
+          (~30s). Re-run 'tailscale status' to confirm.
+          {% endif %}

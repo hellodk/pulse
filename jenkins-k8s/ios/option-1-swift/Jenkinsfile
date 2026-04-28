@@ -1,0 +1,69 @@
+pipeline {
+    agent { label 'ios-agent' }
+    environment {
+        APP_NAME    = 'FoodTruck'
+        SCHEME      = 'Food Truck'
+        WORKSPACE   = 'FoodTruck.xcodeproj'
+        NEXUS_CREDS = credentials('nexus-creds')
+        JFROG_CREDS = credentials('jfrog-creds')
+        JFROG_URL   = 'http://100.89.50.27:30082/artifactory/example-repo-local'
+        NEXUS_URL   = 'http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases'
+        SIMULATOR   = 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
+        REPORTS_DIR = 'reports'
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
+                script {
+                    env.GIT_SHA  = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.ARTIFACT = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip"
+                }
+            }
+        }
+        stage('Validate') {
+            steps {
+                sh 'source ~/.bashrc 2>/dev/null || true; set -e; xcodebuild -version; swift --version; swiftlint version; xcpretty --version'
+            }
+        }
+        stage('Resolve Dependencies') {
+            steps { sh "xcodebuild -resolvePackageDependencies -project ${WORKSPACE} -scheme '${SCHEME}'" }
+        }
+        stage('Build Archive') {
+            steps {
+                sh "mkdir -p build ${REPORTS_DIR}; agvtool new-version -all ${BUILD_NUMBER} || true"
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -project ${WORKSPACE} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
+                sh 'zip -r build/${ARTIFACT} build/${APP_NAME}.xcarchive || true'
+                archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
+            }
+        }
+        stage('Unit Tests') {
+            steps {
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -project ${WORKSPACE} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true'
+            }
+            post { always { junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/test-results.xml" } }
+        }
+        stage('SAST') {
+            parallel {
+                stage('SwiftLint') { steps { sh 'source ~/.bashrc 2>/dev/null; swiftlint lint --reporter html > ${REPORTS_DIR}/swiftlint.html || true' } }
+                stage('Semgrep')   { steps { sh 'semgrep --config=auto --json --output=${REPORTS_DIR}/semgrep.json --include="*.swift" --exclude="build/" . || true' } }
+            }
+        }
+        stage('Upload') {
+            steps {
+                script {
+                    def a = sh(script: 'find build -name "*.zip" -o -name "*.ipa" | head -1', returnStdout: true).trim()
+                    if (a) {
+                        sh 'curl -sf -u "${NEXUS_CREDS_USR}:${NEXUS_CREDS_PSW}" --upload-file \'${a}\' "${NEXUS_URL}/${ARTIFACT}" && echo "Nexus ok" || true'
+                        sh 'curl -sf -u "${JFROG_CREDS_USR}:${JFROG_CREDS_PSW}" -X PUT --upload-file \'${a}\' "${JFROG_URL}/ios/${ARTIFACT}" && echo "JFrog ok" || true'
+                    }
+                }
+            }
+        }
+    }
+    post {
+        failure { emailext(subject: "[iOS-Swift FAILURE] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="failure-email.groovy"}') }
+        success { emailext(subject: "[iOS-Swift SUCCESS] ${JOB_NAME} #${BUILD_NUMBER}", to: 'reject@hellodk.io', mimeType: 'text/html', body: '${SCRIPT, template="success-email.groovy"}') }
+        cleanup { deleteDir() }
+    }
+}
