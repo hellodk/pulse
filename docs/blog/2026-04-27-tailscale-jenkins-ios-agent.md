@@ -822,3 +822,157 @@ This catches the problem at provisioning time rather than after the agent connec
 | Jenkins marks node offline immediately | Ignore the message, restart Jenkins | Run `brew cleanup`; assert free disk in the playbook |
 
 **The principle:** The Tailscale control plane is the single source of truth for network policy. Work with it, not around it. The API gives you everything you need — ACLs, device routes, node management — with the same idempotency guarantees you get from Kubernetes manifests or Ansible playbooks.
+
+---
+
+## Part 2 — Running the Pipelines (And Everything That Broke)
+
+With the agent connected, we had three iOS pipelines and one Android pipeline to run. Seven more problems surfaced.
+
+### Problem 8: SMTP — `namshi/smtp` Can't Relay
+
+The original SMTP relay used `namshi/smtp` (Exim4). Exim4 has a `dc_smarthost` config variable, but the Docker image never populated it correctly for SASL auth. Emails silently dropped.
+
+**Fix:** Switch to `boky/postfix`. It reads relay config from env vars directly:
+
+```yaml
+- name: RELAYHOST
+  value: "[live.smtp.mailtrap.io]:587"
+- name: RELAYHOST_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: mailtrap-smtp-creds
+      key: username   # value: "api"
+- name: RELAYHOST_PASSWORD
+  ...
+- name: POSTFIX_sender_canonical_maps
+  value: "static:hello@demomailtrap.co"
+```
+
+Also: `ALLOW_EMPTY_SENDER_DOMAINS=1` is required — `boky/postfix` refuses to start without it when no sender domain is explicitly configured.
+
+### Problem 9: Mailtrap `535 Authentication Failed`
+
+We had the wrong username. Mailtrap's live SMTP uses `api` as the username (not `apismtp@mailtrap.io`). The correct curl to test:
+
+```bash
+curl --url "smtps://live.smtp.mailtrap.io:465" --ssl-reqd \
+  --mail-from "hello@demomailtrap.co" \
+  --mail-rcpt "reject@hellodk.io" \
+  --user "api:YOUR_TOKEN_HERE" -T message.txt
+```
+
+### Problem 10: Jenkins Tries SSL on Port 25
+
+Jenkins's `emailext` was defaulting to SSL even though Postfix listens on plain port 25. Error: `NOQUEUE: lost connection after CONNECT`.
+
+**Fix in `03-smtp.groovy`:**
+```groovy
+desc.setUseSsl(false)   // ← this line is critical
+desc.setSmtpHost("smtp.utilities.svc.cluster.local")
+desc.setSmtpPort("25")
+```
+
+The call `setUseSsl(false)` wasn't in the original init script. It's now explicit.
+
+### Problem 11: Email Template Parse Error — `$1` in SimpleTemplateEngine
+
+Jenkins's `emailext` plugin processes `.groovy` email templates through Groovy's `SimpleTemplateEngine`. This is NOT a Groovy script — it's a template. The entire file is scanned for `${...}` expressions, including inside single-quoted strings.
+
+The original templates used regex replacements like `replaceAll(/.../,' $1 ')`. Even inside single quotes, `$1` is scanned and fails: _"illegal string body character after dollar sign"_.
+
+**Fix:** Use closure-based regex replacements. Closures receive the capture groups as arguments — no `$1` needed:
+
+```groovy
+md = md.replaceAll(/(?m)^# (.+)/) { m, g -> "<h1>${g}</h1>" }
+//                                   ↑ closure — not a string
+```
+
+Also: the entire code block must be wrapped in `<% %>`. HTML goes directly in the template body, not inside a `return """..."""`.
+
+### Problem 12: `No such property: workspace` in Failure Email
+
+`build.workspace` doesn't exist on `WorkflowRun` (Pipeline jobs). It's a `FreeStyleBuild` concept.
+
+Also: `deleteDir()` in the `cleanup` post condition wipes the workspace before the email renders, so even if `workspace` existed, the file would be gone.
+
+**Fix:** Archive `llm-analysis.md` as a Jenkins artifact, then read from the build's archive directory:
+
+In the Jenkinsfile:
+```groovy
+archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+```
+
+In `failure-email.groovy`:
+```groovy
+def archiveDir = new File(build.getRootDir(), "archive")
+def f = new File(archiveDir, "llm-analysis.md")
+if (f.exists()) {
+    def md = f.text
+    // ... render md to HTML
+}
+```
+
+### Problem 13: iOS Pipelines Jump to Post Actions Immediately
+
+All three iOS jobs failed in under 2 seconds with no stages running. Error in cleanup post: "Attempted to execute a step that requires a node context while `agent none` was specified."
+
+This was diagnosed over multiple angles:
+- Sandbox=true → silent failure at pipeline initialization
+- Sandbox=false → `UnapprovedUsageException` (script needs approval)
+- The android-build job worked fine — it uses `CpsScmFlowDefinition` (reads Jenkinsfile from git)
+- The iOS jobs had been replaced with `CpsFlowDefinition` (inline script) — which requires Script Security approval
+
+**Root cause:** Inline pipeline scripts need explicit approval in Jenkins Script Security. SCM-based pipelines (reading from a git repo) don't have this restriction.
+
+**Fix:** Switch iOS jobs to `CpsScmFlowDefinition` pointing to `file:///home/dk/Documents/git/testing-grounds` (accessible from the Jenkins controller pod as a mounted volume).
+
+### Problem 14: `Declarative: Checkout SCM` Fails on Mac Mini
+
+Even after switching to SCM-based configs, builds failed at the first stage: the implicit `Declarative: Checkout SCM`. Declarative Pipeline automatically checks out the SCM at build start — but this checkout runs on the agent (Mac Mini), which can't access `file:///home/dk/Documents/git/testing-grounds` (that path is on the k0s node, not on Mac Mini).
+
+**Fix:** Add `options { skipDefaultCheckout(true) }` to all iOS Jenkinsfiles. The pipeline then only checks out the app repo explicitly (FoodTruck, mattermost-mobile), which is on the Mac Mini's local filesystem.
+
+```groovy
+pipeline {
+    agent { label 'ios-agent' }
+    options { skipDefaultCheckout(true) }   // ← this line
+    ...
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
+```
+
+### Problem 15: `LANG` Not Set — CocoaPods Unicode Error
+
+`pod install` crashed with:
+```
+Unicode Normalization not appropriate for ASCII-8BIT (Encoding::CompatibilityError)
+```
+
+CocoaPods uses Ruby's `unicode_normalize` which requires UTF-8. The launchd plist didn't set `LANG`.
+
+**Fix in launchd plist:**
+```xml
+<key>LANG</key>
+<string>en_US.UTF-8</string>
+```
+
+And in the Jenkinsfile step as a belt-and-suspenders measure:
+```groovy
+sh 'export LANG=en_US.UTF-8; cd ios && pod install --repo-update'
+```
+
+---
+
+## Final State
+
+Three iOS pipelines succeeding on the Mac Mini M2:
+- `ios-swift-xcodebuild` (FoodTruck, xcodebuild directly) — 29s
+- `ios-fastlane` (FoodTruck, Fastlane) — 46s
+- `ios-react-native` (mattermost-mobile, npm ci + pod install) — ~8 min
+
+One Android pipeline succeeding on the k8s agent pod with LLM-assisted failure analysis.
+
+All emails delivered to `reject@hellodk.io` via Mailtrap live SMTP.
