@@ -1,55 +1,49 @@
-// Jenkins email-ext Groovy template — failure notification
+<%
 import java.text.SimpleDateFormat
 
-def build    = binding.getVariable("build")
-def jobName  = build.project.name
-def buildNum = build.number
-def duration = build.durationString.replace(' and counting', '')
-def sdf      = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss 'UTC'")
+def build       = binding.getVariable("build")
+def jobName     = build.project.name
+def buildNum    = build.number
+def duration    = build.durationString.replace(' and counting', '')
+def sdf         = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss 'UTC'")
 sdf.setTimeZone(TimeZone.getTimeZone("UTC"))
-def timestamp = sdf.format(new Date(build.startTimeInMillis))
-
+def timestamp   = sdf.format(new Date(build.startTimeInMillis))
 def failedStage = ""
-try { failedStage = build.getEnvironment()['FAILED_STAGE'] ?: "Unknown" } catch (e) { failedStage = "Unknown" }
+try { failedStage = build.getEnvironment()['FAILED_STAGE'] ?: "Unknown" } catch(e) { failedStage = "Unknown" }
 
-def llmAnalysisHtml = ""
+def llmHtml = ""
 try {
     def ws = build.workspace
     if (ws) {
         def f = ws.child("llm-analysis.md")
         if (f.exists()) {
             def md = f.readToString()
-            // Basic Markdown → HTML conversion
-            md = md.replaceAll(/(?m)^# (.+)$/, '<h1 style="color:#333">$1</h1>')
-            md = md.replaceAll(/(?m)^## (.+)$/, '<h2 style="color:#1976d2;border-left:4px solid #1976d2;padding-left:8px">$1</h2>')
-            md = md.replaceAll(/(?m)^### (.+)$/, '<h3 style="color:#555">$1</h3>')
-            md = md.replaceAll(/(?m)^\| (.+) \|$/, '<tr><td style="border:1px solid #ddd;padding:6px">$1</td></tr>'.replaceAll('\\|', '</td><td style="border:1px solid #ddd;padding:6px">'))
-            md = md.replaceAll(/```mermaid\n([\s\S]*?)```/, '<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;font-style:italic">[Mermaid Diagram — open llm-analysis.md to render]\n$1</pre>')
-            md = md.replaceAll(/```[a-z]*\n([\s\S]*?)```/, '<pre style="background:#2d2d2d;color:#f8f8f2;padding:12px;border-radius:4px;overflow-x:auto;font-size:12px">$1</pre>')
-            md = md.replaceAll(/`([^`]+)`/, '<code style="background:#e8e8e8;padding:2px 4px;border-radius:3px;font-size:12px">$1</code>')
-            md = md.replaceAll(/\*\*([^*]+)\*\*/, '<strong>$1</strong>')
-            md = md.replaceAll(/(?m)^---$/, '<hr style="border:none;border-top:1px solid #eee;margin:16px 0"/>')
+            // closure-based replacements — avoids $1 syntax that breaks SimpleTemplateEngine
+            md = md.replaceAll(/(?m)^# (.+)/) { m, g -> "<h1 style='color:#333'>${g}</h1>" }
+            md = md.replaceAll(/(?m)^## (.+)/) { m, g -> "<h2 style='color:#1976d2;border-left:4px solid #1976d2;padding-left:8px'>${g}</h2>" }
+            md = md.replaceAll(/(?m)^### (.+)/) { m, g -> "<h3 style='color:#555'>${g}</h3>" }
+            md = md.replaceAll(/`([^`]+)`/) { m, g -> "<code style='background:#e8e8e8;padding:2px 4px;border-radius:3px;font-size:12px'>${g}</code>" }
+            md = md.replaceAll(/\*\*([^*]+)\*\*/) { m, g -> "<strong>${g}</strong>" }
+            md = md.replaceAll(/```[a-z]*\n([\s\S]*?)```/, { m, g -> "<pre style='background:#2d2d2d;color:#f8f8f2;padding:12px;border-radius:4px;overflow-x:auto;font-size:12px'>${g}</pre>" })
             md = md.replaceAll(/\n\n/, '</p><p style="margin:8px 0">')
-            llmAnalysisHtml = "<p style='margin:8px 0'>${md}</p>"
+            llmHtml = "<p style='margin:8px 0'>${md}</p>"
         }
     }
-} catch (e) {
-    llmAnalysisHtml = "<p><em>LLM analysis not available: ${e.message}</em></p>"
+} catch(e) {
+    llmHtml = "<p><em>LLM analysis not available: ${e.message}</em></p>"
 }
-
-return """<!DOCTYPE html>
+%>
+<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"/></head>
 <body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,sans-serif;">
 <div style="max-width:900px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.1);">
 
-  <!-- Header -->
   <div style="background:#c62828;color:white;padding:24px 32px;">
     <div style="font-size:22px;font-weight:bold;">Build Failed</div>
-    <div style="margin-top:6px;opacity:0.9;font-size:14px;">${jobName} #${buildNum} — Failed at stage: <strong>${failedStage}</strong></div>
+    <div style="margin-top:6px;opacity:0.9;font-size:14px;">${jobName} #${buildNum} &mdash; Failed at: <strong>${failedStage}</strong></div>
   </div>
 
-  <!-- Build Details -->
   <div style="padding:24px 32px;border-bottom:1px solid #eee;">
     <h2 style="margin:0 0 16px;font-size:15px;color:#333;border-left:4px solid #c62828;padding-left:12px;">Build Details</h2>
     <table style="border-collapse:collapse;width:100%;">
@@ -61,19 +55,15 @@ return """<!DOCTYPE html>
     </table>
   </div>
 
-  <!-- LLM Analysis -->
   <div style="padding:24px 32px;border-bottom:1px solid #eee;">
     <h2 style="margin:0 0 8px;font-size:15px;color:#333;border-left:4px solid #1976d2;padding-left:12px;">LLM Failure Analysis</h2>
-    <p style="margin:0 0 16px;font-size:12px;color:#666;">Analyzed by Qwen2.5-Coder (Ollama), DeepSeek-Coder-V2-Lite (llama.cpp), and CodeLlama (if available). Open the attached <strong>llm-analysis.md</strong> for rendered Mermaid diagrams.</p>
-    <div style="font-size:13px;line-height:1.7;">
-      ${llmAnalysisHtml}
-    </div>
+    <p style="margin:0 0 16px;font-size:12px;color:#666;">Analyzed by Qwen2.5-Coder / DeepSeek-Coder / CodeLlama via Ollama.</p>
+    <div style="font-size:13px;line-height:1.7;">${llmHtml}</div>
   </div>
 
-  <!-- Footer -->
   <div style="padding:14px 32px;background:#f9f9f9;font-size:11px;color:#888;">
-    Jenkins CI/CD &nbsp;|&nbsp; utilities namespace &nbsp;|&nbsp; Build logs and LLM analysis attached as zip
+    Jenkins CI/CD &nbsp;|&nbsp; utilities namespace
   </div>
 </div>
 </body>
-</html>"""
+</html>
