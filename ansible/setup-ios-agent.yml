@@ -366,6 +366,8 @@
                   <string>{{ ansible_env.HOME }}/.nvm</string>
                   <key>RBENV_ROOT</key>
                   <string>{{ ansible_env.HOME }}/.rbenv</string>
+                  <key>LANG</key>
+                  <string>en_US.UTF-8</string>
               </dict>
               <key>RunAtLoad</key>
               <true/>

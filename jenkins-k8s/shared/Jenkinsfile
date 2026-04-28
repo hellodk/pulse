@@ -244,6 +244,9 @@ pipeline {
                     done
                     zip -r build-${env.BUILD_NUMBER}-logs.zip build-logs/ 2>/dev/null || true
                 """
+                // Archive llm-analysis.md so failure-email.groovy can read it
+                // via build.getRootDir()/archive/llm-analysis.md
+                archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
             }
             emailext(
                 subject: "[JENKINS FAILURE] \${env.JOB_NAME} #\${env.BUILD_NUMBER} — Failed at: \${env.FAILED_STAGE ?: 'Unknown'}",

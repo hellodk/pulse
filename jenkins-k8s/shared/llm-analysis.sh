@@ -1,5 +1,5 @@
 #!/bin/bash
-# LLM failure analysis: calls Ollama and llama.cpp endpoints, merges results into llm-analysis.md
+# LLM failure analysis: queries both Ollama endpoints, picks best available models
 set -euo pipefail
 
 FAILED_STAGE="${FAILED_STAGE:-Unknown}"
@@ -9,11 +9,14 @@ BUILD_NUMBER="${BUILD_NUMBER:-0}"
 JOB_NAME="${JOB_NAME:-unknown}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-OLLAMA_URL="http://192.168.1.10:11434"
-LLAMACPP_URL="http://192.168.1.24:21434"
+ENDPOINT_A="http://100.89.50.27:11434"
+ENDPOINT_B="http://100.104.14.62:21434"
 TIMEOUT=120
 
-PROMPT="You are a CI/CD build failure analyst. Analyze this Android build failure.
+# Priority order for model selection (most capable first)
+MODEL_PRIORITY="qwen2.5-coder qwen2.5 deepseek-coder codellama llama3 llama2 mistral phi"
+
+PROMPT="You are a CI/CD build failure analyst. Analyze this build failure.
 
 Failed Stage: ${FAILED_STAGE}
 
@@ -45,49 +48,44 @@ flowchart TD
 \`\`\`
 
 ## References
-Links or notes to relevant docs, Gradle flags, or Android SDK notes."
+Links or notes to relevant docs or SDK notes."
+
+# Returns the best available model name from an Ollama endpoint,
+# or empty string if endpoint is unreachable.
+best_model() {
+    local endpoint="$1"
+    local available
+    available=$(curl -sf --max-time 5 "${endpoint}/api/tags" \
+        | jq -r '.models[].name' 2>/dev/null) || return 0
+    for priority in ${MODEL_PRIORITY}; do
+        local match
+        match=$(echo "$available" | grep -i "^${priority}" | head -1)
+        if [ -n "$match" ]; then
+            echo "$match"
+            return
+        fi
+    done
+    # Fall back to whatever is first
+    echo "$available" | head -1
+}
 
 call_ollama() {
-    local model="$1"
-    local output_file="$2"
-    echo "  → Calling Ollama model: ${model}" >&2
+    local endpoint="$1"
+    local model="$2"
+    local output_file="$3"
+    echo "  → Calling ${endpoint} model: ${model}" >&2
     local payload
     payload=$(jq -n \
         --arg model "$model" \
         --arg prompt "$PROMPT" \
         '{model: $model, prompt: $prompt, stream: false}')
     curl -sf --max-time "$TIMEOUT" \
-        -X POST "${OLLAMA_URL}/api/generate" \
+        -X POST "${endpoint}/api/generate" \
         -H "Content-Type: application/json" \
         -d "$payload" \
-        | jq -r '.response // "ERROR: empty response from Ollama"' \
+        | jq -r '.response // "ERROR: empty response"' \
         > "$output_file" 2>/dev/null \
-        || echo "ERROR: Ollama call failed (timeout or connection refused)" > "$output_file"
-}
-
-call_llamacpp() {
-    local model="$1"
-    local output_file="$2"
-    echo "  → Calling llama.cpp model: ${model}" >&2
-    local payload
-    payload=$(jq -n \
-        --arg model "$model" \
-        --arg content "$PROMPT" \
-        '{model: $model, messages: [{role: "user", content: $content}], stream: false}')
-    curl -sf --max-time "$TIMEOUT" \
-        -X POST "${LLAMACPP_URL}/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        | jq -r '.choices[0].message.content // "ERROR: empty response from llama.cpp"' \
-        > "$output_file" 2>/dev/null \
-        || echo "ERROR: llama.cpp call failed (timeout or connection refused)" > "$output_file"
-}
-
-model_available_in_ollama() {
-    local model="$1"
-    curl -sf --max-time 5 "${OLLAMA_URL}/api/tags" \
-        | jq -r '.models[].name' 2>/dev/null \
-        | grep -q "^${model}" 2>/dev/null
+        || echo "ERROR: call to ${endpoint} failed (timeout or connection refused)" > "$output_file"
 }
 
 TMP=$(mktemp -d)
@@ -95,32 +93,24 @@ trap 'rm -rf "$TMP"' EXIT
 
 echo "[llm-analysis] Starting analysis for: ${JOB_NAME} #${BUILD_NUMBER} — ${FAILED_STAGE}" >&2
 
-echo "[1/3] Qwen2.5-Coder:14B-Instruct (Ollama)" >&2
-call_ollama "Qwen2.5-Coder:14B-Instruct" "${TMP}/qwen.md"
-
-echo "[2/3] DeepSeek-Coder-V2-Lite-Instruct (llama.cpp)" >&2
-call_llamacpp "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf" "${TMP}/deepseek.md"
-
-echo "[3/3] CodeLlama (Ollama — optional)" >&2
-if model_available_in_ollama "codellama"; then
-    call_ollama "codellama" "${TMP}/codellama.md"
+echo "[1/2] Querying endpoint A: ${ENDPOINT_A}" >&2
+MODEL_A=$(best_model "$ENDPOINT_A")
+if [ -n "$MODEL_A" ]; then
+    echo "  Selected model: ${MODEL_A}" >&2
+    call_ollama "$ENDPOINT_A" "$MODEL_A" "${TMP}/endpoint_a.md"
 else
-    cat > "${TMP}/codellama.md" <<'EOF'
-*Model not available on this Ollama instance.*
+    echo "  Endpoint A unreachable or no models found" >&2
+    echo "*Endpoint A (${ENDPOINT_A}) unreachable or has no models.*" > "${TMP}/endpoint_a.md"
+fi
 
-To install CodeLlama, run on the Ollama host:
-```bash
-# 7B variant (~3.8 GB)
-curl -X POST http://192.168.1.10:11434/api/pull \
-  -H "Content-Type: application/json" \
-  -d '{"name": "codellama"}'
-
-# 13B variant — better analysis (~7.4 GB)
-curl -X POST http://192.168.1.10:11434/api/pull \
-  -H "Content-Type: application/json" \
-  -d '{"name": "codellama:13b"}'
-```
-EOF
+echo "[2/2] Querying endpoint B: ${ENDPOINT_B}" >&2
+MODEL_B=$(best_model "$ENDPOINT_B")
+if [ -n "$MODEL_B" ]; then
+    echo "  Selected model: ${MODEL_B}" >&2
+    call_ollama "$ENDPOINT_B" "$MODEL_B" "${TMP}/endpoint_b.md"
+else
+    echo "  Endpoint B unreachable or no models found" >&2
+    echo "*Endpoint B (${ENDPOINT_B}) unreachable or has no models.*" > "${TMP}/endpoint_b.md"
 fi
 
 {
@@ -132,16 +122,23 @@ fi
   printf '| **Build #** | %s |\n' "${BUILD_NUMBER}"
   printf '| **Failed Stage** | %s |\n' "${FAILED_STAGE}"
   printf '| **Timestamp** | %s |\n' "${TIMESTAMP}"
-  printf '\n> Mermaid diagrams render natively in GitHub, GitLab, VS Code (Markdown Preview Mermaid Support), and Obsidian.\n\n'
+  printf '\n> Mermaid diagrams render natively in GitHub, GitLab, and VS Code.\n\n'
   printf -- '---\n\n'
-  printf '## Analysis: Qwen2.5-Coder:14B-Instruct (Ollama — 192.168.1.10:11434)\n\n'
-  cat "${TMP}/qwen.md"
+
+  if [ -n "$MODEL_A" ]; then
+    printf '## Analysis: %s (%s)\n\n' "${MODEL_A}" "${ENDPOINT_A}"
+  else
+    printf '## Analysis: Endpoint A (%s)\n\n' "${ENDPOINT_A}"
+  fi
+  cat "${TMP}/endpoint_a.md"
   printf '\n\n---\n\n'
-  printf '## Analysis: DeepSeek-Coder-V2-Lite-Instruct (llama.cpp — 192.168.1.24:21434)\n\n'
-  cat "${TMP}/deepseek.md"
-  printf '\n\n---\n\n'
-  printf '## Analysis: CodeLlama (Ollama — 192.168.1.10:11434)\n\n'
-  cat "${TMP}/codellama.md"
+
+  if [ -n "$MODEL_B" ]; then
+    printf '## Analysis: %s (%s)\n\n' "${MODEL_B}" "${ENDPOINT_B}"
+  else
+    printf '## Analysis: Endpoint B (%s)\n\n' "${ENDPOINT_B}"
+  fi
+  cat "${TMP}/endpoint_b.md"
 } > llm-analysis.md
 
 echo "[llm-analysis] Done — written to llm-analysis.md" >&2
