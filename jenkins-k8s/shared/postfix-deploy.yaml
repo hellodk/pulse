@@ -22,29 +22,27 @@ spec:
         ports:
         - containerPort: 25
         env:
-        # boky/postfix relay configuration — STARTTLS to Mailtrap on port 587
+        # boky/postfix relay configuration — STARTTLS to Brevo on port 587
         - name: RELAYHOST
-          value: "[live.smtp.mailtrap.io]:587"
+          value: "[smtp-relay.brevo.com]:587"
         - name: RELAYHOST_USERNAME
           valueFrom:
             secretKeyRef:
-              name: mailtrap-smtp-creds
+              name: brevo-smtp-creds
               key: username
         - name: RELAYHOST_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: mailtrap-smtp-creds
+              name: brevo-smtp-creds
               key: password
-        # Accept any FROM domain from within the cluster.
-        # sender_canonical_maps rewrites envelope sender to hello@demomailtrap.co upstream.
         - name: ALLOW_EMPTY_SENDER_DOMAINS
           value: "1"
         - name: POSTFIX_myhostname
           value: "jenkins-ci.hellodk.io"
         - name: POSTFIX_myorigin
-          value: "demomailtrap.co"
+          value: "hellodk.io"
         - name: POSTFIX_sender_canonical_maps
-          value: "static:hello@demomailtrap.co"
+          value: "static:a98477001@smtp-brevo.com"
         readinessProbe:
           tcpSocket:
             port: 25

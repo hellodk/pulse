@@ -52,13 +52,13 @@ data:
     desc.setSmtpHost("smtp.utilities.svc.cluster.local")
     desc.setSmtpPort("25")
     desc.setUseSsl(false)
-    desc.setReplyToAddress("hello@demomailtrap.co")
+    desc.setReplyToAddress("a98477001@smtp-brevo.com")
     inst.setSystemMessage("Jenkins CI")
     // admin address appears as From: in all notification emails
-    inst.setSystemAdminMailAddress("hello@demomailtrap.co")
+    inst.setSystemAdminMailAddress("a98477001@smtp-brevo.com")
     desc.save()
     inst.save()
-    println "SMTP configured — sender: hello@demomailtrap.co"
+    println "SMTP configured — sender: a98477001@smtp-brevo.com"
 
   04-sonarqube.groovy: |
     import jenkins.model.*
