@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: node-disk-cleanup
+  namespace: utilities
+spec:
+  # Run at 02:00 UTC daily
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          hostPID: true
+          tolerations:
+          - key: node.kubernetes.io/disk-pressure
+            operator: Exists
+            effect: NoSchedule
+          containers:
+          - name: cleanup
+            image: alpine:3.19
+            securityContext:
+              privileged: true
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "=== Disk before cleanup ==="
+              df -h /host-root/ | tail -1
+
+              # Remove dangling container images via crictl if available
+              if nsenter -t 1 -m -u -i -n -- which crictl > /dev/null 2>&1; then
+                echo "Pruning unused container images..."
+                nsenter -t 1 -m -u -i -n -- crictl rmi --prune 2>/dev/null && echo "crictl prune done" || true
+              fi
+
+              # Clean k0s image cache older than 7 days
+              find /host-root/var/lib/k0s/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots \
+                -maxdepth 1 -type d -mtime +7 2>/dev/null | head -20 | xargs -r rm -rf || true
+
+              # Clean up old Jenkins build workspace dirs > 3 days old
+              find /host-root/home/jenkins/agent/workspace \
+                -maxdepth 1 -mindepth 1 -type d -mtime +3 2>/dev/null | \
+                xargs -r rm -rf && echo "Old workspaces removed" || true
+
+              # Clean temp/log files
+              find /host-root/tmp -maxdepth 2 -type f -mtime +1 -delete 2>/dev/null || true
+
+              echo "=== Disk after cleanup ==="
+              df -h /host-root/ | tail -1
+
+              # Remove disk-pressure taint if it exists
+              USAGE=$(df /host-root/ | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+              if [ "$USAGE" -lt 85 ]; then
+                echo "Disk at ${USAGE}% — removing disk-pressure taint if present"
+                nsenter -t 1 -m -u -i -n -- kubectl taint node --all \
+                  node.kubernetes.io/disk-pressure:NoSchedule- 2>/dev/null || true
+              else
+                echo "Disk at ${USAGE}% — still high, manual intervention may be needed"
+              fi
+            volumeMounts:
+            - name: host-root
+              mountPath: /host-root
+              readOnly: false
+          volumes:
+          - name: host-root
+            hostPath:
+              path: /
