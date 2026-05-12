@@ -3,43 +3,25 @@
 # generate-dummy-signing.sh
 #
 # PURPOSE
-#   Generates a complete self-signed iOS enterprise signing environment for
-#   testing the codesign pipeline on macOS Tahoe (26) WITHOUT an Apple
-#   Developer Account.  Produces a real, signed .ipa file.
-#
-# WHAT IT CREATES
-#   dummy-signing/
-#   ├── ca.key / ca.crt              — self-signed CA (root)
-#   ├── dist.key / dist.crt          — "iPhone Distribution" leaf cert
-#   ├── dist.p12                     — PKCS#12 bundle (cert + key)
-#   ├── BankNow.mobileprovision      — CMS-signed fake enterprise profile
-#   ├── Entitlements.plist           — entitlements for codesign
-#   ├── ExportOptions-dummy.plist    — for dummy/test IPA packaging
-#   └── ExportOptions-enterprise.plist — TEMPLATE for real org use
-#
-# KEYCHAIN
-#   Creates a dedicated keychain: ios-banknow-dummy.keychain
-#   Includes Tahoe fix: security set-key-partition-list
-#   Cleaned up automatically on re-run; manually via --clean flag.
-#
-# IPA OUTPUT
-#   The pipeline (Jenkinsfile.groovy) calls this script, then archives
-#   and manually packages the IPA — bypassing -exportArchive which requires
-#   an Apple-signed provisioning profile.  Switch DUMMY_SIGNING=false in
-#   Jenkins to use real enterprise credentials in production.
+#   Interactive tool to generate a self-signed iOS enterprise signing
+#   environment for testing the codesign pipeline on macOS Tahoe (26)
+#   WITHOUT an Apple Developer Account.
 #
 # USAGE
-#   chmod +x generate-dummy-signing.sh
-#   ./generate-dummy-signing.sh            # generate everything
-#   ./generate-dummy-signing.sh --clean    # remove keychain + output dir
-#   ./generate-dummy-signing.sh --verify   # verify existing setup
+#   ./generate-dummy-signing.sh              # interactive menu (default)
+#   ./generate-dummy-signing.sh --generate   # non-interactive: generate
+#   ./generate-dummy-signing.sh --verify     # non-interactive: verify
+#   ./generate-dummy-signing.sh --clean      # non-interactive: clean up
+#   ./generate-dummy-signing.sh --identities # non-interactive: show certs
 #
 # REQUIREMENTS
-#   macOS Tahoe (26) or later, Xcode CLI tools, openssl (Homebrew recommended)
+#   macOS Tahoe (26)+, Xcode CLI tools, openssl (brew install openssl)
 # =============================================================================
 set -euo pipefail
 
-# ── Configuration — edit these to match your real project ────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
+# Edit these values to match your project before running.
+# --generate / menu option 1 will prompt you to confirm before proceeding.
 TEAM_ID="DUMTEAM01"
 TEAM_NAME="YourBank Ltd"
 APP_NAME="BankNow"
@@ -47,125 +29,153 @@ BUNDLE_ID="com.yourbank.banknow"
 CERT_CN="iPhone Distribution: ${TEAM_NAME} (${TEAM_ID})"
 CERT_VALIDITY_DAYS=365
 KEYCHAIN_NAME="ios-banknow-dummy.keychain"
-KEYCHAIN_PASS="dummy-kc-pass-$(date +%s | tail -c 8)"   # ephemeral; stored in output dir
+KEYCHAIN_PASS="dummy-kc-$(date +%s | tail -c 8)"
 CERT_PASS="DummyCertPass123!"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/dummy-signing"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m';  GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m';  BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-log()    { echo -e "${BLUE}[INFO]${NC}  $*"; }
-ok()     { echo -e "${GREEN}[OK]${NC}    $*"; }
-warn()   { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-err()    { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-section(){ echo -e "\n${BOLD}${CYAN}══ $* ══${NC}"; }
+log()     { echo -e "${BLUE}[INFO]${NC}  $*"; }
+ok()      { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+err()     { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+section() { echo -e "\n${BOLD}${CYAN}── $* ──${NC}"; }
+dim()     { echo -e "${DIM}$*${NC}"; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 require_cmd() {
-    if ! command -v "$1" &>/dev/null; then
-        err "Required command not found: $1"
-        case "$1" in
-            openssl) err "Install via: brew install openssl" ;;
-            uuidgen) err "Available on macOS — check PATH" ;;
-            security|codesign|xcodebuild)
-                err "Install Xcode Command Line Tools: xcode-select --install" ;;
-        esac
-        exit 1
-    fi
+    command -v "$1" &>/dev/null && return 0
+    err "Required command not found: $1"
+    case "$1" in
+        openssl)  err "  Fix: brew install openssl" ;;
+        uuidgen)  err "  Fix: available on macOS — check PATH" ;;
+        security|codesign) err "  Fix: xcode-select --install" ;;
+    esac
+    return 1
+}
+
+check_prerequisites() {
+    local missing=0
+    for cmd in openssl security codesign uuidgen; do
+        require_cmd "$cmd" || missing=$((missing+1))
+    done
+    [[ "${missing}" -eq 0 ]]
 }
 
 iso_date_plus_days() {
     local days=$1
     if date -v+"${days}d" +"%Y-%m-%dT%H:%M:%SZ" &>/dev/null 2>&1; then
-        date -v+"${days}d" -u +"%Y-%m-%dT%H:%M:%SZ"   # macOS BSD date
+        date -v+"${days}d" -u +"%Y-%m-%dT%H:%M:%SZ"
     else
-        date -u -d "+${days} days" +"%Y-%m-%dT%H:%M:%SZ"  # GNU date fallback
+        date -u -d "+${days} days" +"%Y-%m-%dT%H:%M:%SZ"
     fi
 }
 
-# ── Clean ─────────────────────────────────────────────────────────────────────
-do_clean() {
-    section "Cleaning Up"
-    security delete-keychain "${KEYCHAIN_NAME}" 2>/dev/null \
-        && ok "Keychain '${KEYCHAIN_NAME}' deleted." \
-        || warn "Keychain not found — nothing to delete."
-    rm -rf "${OUTPUT_DIR}"
-    ok "Output directory removed: ${OUTPUT_DIR}"
-    exit 0
-}
-
-# ── Verify ────────────────────────────────────────────────────────────────────
-do_verify() {
-    section "Verifying Existing Setup"
-    local ok_count=0 fail_count=0
-
-    check() {
-        local label="$1" val="$2"
-        if [[ -n "${val}" && "${val}" != "(none found)" ]]; then
-            ok "${label}"
-            (( ok_count++ )) || true
-        else
-            err "${label}: NOT FOUND"
-            (( fail_count++ )) || true
-        fi
-    }
-
-    check "Output directory" "$(ls "${OUTPUT_DIR}" 2>/dev/null | head -1)"
-    check "dist.p12"         "$(ls "${OUTPUT_DIR}/dist.p12" 2>/dev/null)"
-    check "BankNow.mobileprovision" \
-          "$(ls "${OUTPUT_DIR}/BankNow.mobileprovision" 2>/dev/null)"
-    check "ExportOptions-dummy.plist" \
-          "$(ls "${OUTPUT_DIR}/ExportOptions-dummy.plist" 2>/dev/null)"
-
-    local identity
-    identity=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
-               2>/dev/null | grep "iPhone Distribution" | head -1 || echo "")
-    check "Signing identity in keychain" "${identity}"
-    if [[ -n "${identity}" ]]; then
-        log "  ${identity}"
-    fi
-
+press_enter() {
     echo ""
-    if [[ "${fail_count}" -eq 0 ]]; then
-        ok "All checks passed (${ok_count}/${ok_count})"
-    else
-        err "${fail_count} check(s) failed — re-run without --verify to regenerate"
-        exit 1
-    fi
-    exit 0
+    read -r -p "  Press Enter to continue..." _
 }
 
-# ── Argument parsing ──────────────────────────────────────────────────────────
-[[ "${1:-}" == "--clean"  ]] && do_clean
-[[ "${1:-}" == "--verify" ]] && do_verify
+confirm() {
+    # confirm "Are you sure?" → returns 0 (yes) or 1 (no)
+    local prompt="${1:-Are you sure?}"
+    local answer
+    echo ""
+    read -r -p "  ${prompt} [y/N] " answer
+    [[ "${answer}" =~ ^[Yy]$ ]]
+}
 
-# ── Prerequisites ─────────────────────────────────────────────────────────────
-section "Checking Prerequisites"
-require_cmd openssl
-require_cmd security
-require_cmd codesign
-require_cmd uuidgen
-ok "All prerequisites found."
+# ── Banner ────────────────────────────────────────────────────────────────────
+print_banner() {
+    clear 2>/dev/null || true
+    echo -e "${BOLD}${CYAN}"
+    echo "  ╔══════════════════════════════════════════════════════════╗"
+    echo "  ║     iOS Enterprise Signing Setup — macOS Tahoe (26)     ║"
+    echo "  ║     Dummy certificate generator for pipeline testing     ║"
+    echo "  ╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
 
-# ── Setup ─────────────────────────────────────────────────────────────────────
-section "Preparing Output Directory"
-mkdir -p "${OUTPUT_DIR}"
-log "Output dir : ${OUTPUT_DIR}"
-log "Team ID    : ${TEAM_ID}"
-log "Bundle ID  : ${BUNDLE_ID}"
-log "Cert CN    : ${CERT_CN}"
-log "Validity   : ${CERT_VALIDITY_DAYS} days"
+# ── Current config display ────────────────────────────────────────────────────
+print_config() {
+    echo -e "  ${BOLD}Current Configuration${NC}"
+    echo    "  ─────────────────────────────────────────────────────────"
+    printf  "  %-18s %s\n" "App Name:"     "${APP_NAME}"
+    printf  "  %-18s %s\n" "Bundle ID:"    "${BUNDLE_ID}"
+    printf  "  %-18s %s\n" "Team Name:"    "${TEAM_NAME}"
+    printf  "  %-18s %s\n" "Team ID:"      "${TEAM_ID}"
+    printf  "  %-18s %s\n" "Cert CN:"      "${CERT_CN}"
+    printf  "  %-18s %s days\n" "Validity:" "${CERT_VALIDITY_DAYS}"
+    printf  "  %-18s %s\n" "Keychain:"     "${KEYCHAIN_NAME}"
+    printf  "  %-18s %s\n" "Output Dir:"   "${OUTPUT_DIR}"
+    echo    "  ─────────────────────────────────────────────────────────"
+    dim "  To change these values, edit the CONFIG section at the top of"
+    dim "  this script: ${SCRIPT_DIR}/generate-dummy-signing.sh"
+    echo ""
+}
 
-# Save keychain pass for the teardown script / Jenkins post-always
-printf '%s' "${KEYCHAIN_PASS}" > "${OUTPUT_DIR}/.keychain_pass"
-chmod 600 "${OUTPUT_DIR}/.keychain_pass"
+# ── Status badge ──────────────────────────────────────────────────────────────
+print_status_badge() {
+    local keychain_ok=false files_ok=false
 
-# ── Step 1: Self-Signed CA ────────────────────────────────────────────────────
-section "Step 1 — Generating Certificate Authority"
+    security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+        2>/dev/null | grep -q "iPhone Distribution" && keychain_ok=true
 
-cat > "${OUTPUT_DIR}/ca.cnf" << EOF
+    [[ -f "${OUTPUT_DIR}/dist.p12" && \
+       -f "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" ]] && files_ok=true
+
+    echo -e "  ${BOLD}Status${NC}"
+    echo    "  ─────────────────────────────────────────────────────────"
+    if "${keychain_ok}"; then
+        echo -e "  ${GREEN}●${NC} Signing identity  : present in keychain"
+    else
+        echo -e "  ${RED}●${NC} Signing identity  : NOT found"
+    fi
+
+    if "${files_ok}"; then
+        echo -e "  ${GREEN}●${NC} Generated files   : present"
+    else
+        echo -e "  ${RED}●${NC} Generated files   : NOT found"
+    fi
+    echo ""
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ACTION FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Option 1: Generate ────────────────────────────────────────────────────────
+do_generate() {
+    print_banner
+    echo -e "  ${BOLD}Generate Dummy Signing Environment${NC}\n"
+    print_config
+
+    if ! confirm "Proceed with the above configuration?"; then
+        echo ""
+        warn "Cancelled. Edit the CONFIG section at the top of the script and re-run."
+        return
+    fi
+
+    section "Checking Prerequisites"
+    if ! check_prerequisites; then
+        err "One or more prerequisites are missing. Install them and retry."
+        press_enter
+        return
+    fi
+    ok "All prerequisites found."
+
+    section "Preparing Output Directory"
+    mkdir -p "${OUTPUT_DIR}"
+    printf '%s' "${KEYCHAIN_PASS}" > "${OUTPUT_DIR}/.keychain_pass"
+    chmod 600 "${OUTPUT_DIR}/.keychain_pass"
+    log "Output: ${OUTPUT_DIR}"
+
+    # ── CA ────────────────────────────────────────────────────────────────────
+    section "Step 1 — Certificate Authority"
+    cat > "${OUTPUT_DIR}/ca.cnf" << EOF
 [req]
 default_bits       = 4096
 distinguished_name = dn
@@ -185,20 +195,17 @@ authorityKeyIdentifier = keyid:always,issuer
 basicConstraints       = critical,CA:true
 keyUsage               = critical,keyCertSign,cRLSign
 EOF
+    openssl genrsa -out "${OUTPUT_DIR}/ca.key" 4096 2>/dev/null
+    openssl req -new -x509 \
+        -key    "${OUTPUT_DIR}/ca.key" \
+        -out    "${OUTPUT_DIR}/ca.crt" \
+        -days   "${CERT_VALIDITY_DAYS}" \
+        -config "${OUTPUT_DIR}/ca.cnf" 2>/dev/null
+    ok "Self-signed CA generated."
 
-openssl genrsa -out "${OUTPUT_DIR}/ca.key" 4096 2>/dev/null
-openssl req -new -x509 \
-    -key    "${OUTPUT_DIR}/ca.key" \
-    -out    "${OUTPUT_DIR}/ca.crt" \
-    -days   "${CERT_VALIDITY_DAYS}" \
-    -config "${OUTPUT_DIR}/ca.cnf" \
-    2>/dev/null
-ok "CA certificate generated."
-
-# ── Step 2: Distribution Certificate ─────────────────────────────────────────
-section "Step 2 — Generating iPhone Distribution Certificate"
-
-cat > "${OUTPUT_DIR}/dist.cnf" << EOF
+    # ── Distribution cert ─────────────────────────────────────────────────────
+    section "Step 2 — iPhone Distribution Certificate"
+    cat > "${OUTPUT_DIR}/dist.cnf" << EOF
 [req]
 default_bits       = 2048
 distinguished_name = dn
@@ -213,109 +220,81 @@ O  = ${TEAM_NAME}
 CN = ${CERT_CN}
 
 [v3_req]
-keyUsage         = critical,digitalSignature
-extendedKeyUsage = critical,codeSigning
+keyUsage             = critical,digitalSignature
+extendedKeyUsage     = critical,codeSigning
 subjectKeyIdentifier = hash
 EOF
+    openssl genrsa -out "${OUTPUT_DIR}/dist.key" 2048 2>/dev/null
+    openssl req -new \
+        -key    "${OUTPUT_DIR}/dist.key" \
+        -out    "${OUTPUT_DIR}/dist.csr" \
+        -config "${OUTPUT_DIR}/dist.cnf" 2>/dev/null
+    openssl x509 -req \
+        -in         "${OUTPUT_DIR}/dist.csr" \
+        -CA         "${OUTPUT_DIR}/ca.crt" \
+        -CAkey      "${OUTPUT_DIR}/ca.key" \
+        -CAcreateserial \
+        -out        "${OUTPUT_DIR}/dist.crt" \
+        -days       "${CERT_VALIDITY_DAYS}" \
+        -extfile    "${OUTPUT_DIR}/dist.cnf" \
+        -extensions v3_req 2>/dev/null
+    ok "Distribution certificate generated."
+    log "  CN     : $(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -noout -subject 2>/dev/null | sed 's/subject=//')"
+    log "  Expiry : $(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -noout -enddate 2>/dev/null | sed 's/notAfter=//')"
 
-openssl genrsa -out "${OUTPUT_DIR}/dist.key" 2048 2>/dev/null
+    # ── PKCS#12 ───────────────────────────────────────────────────────────────
+    section "Step 3 — PKCS#12 Bundle (.p12)"
+    openssl pkcs12 -export \
+        -out      "${OUTPUT_DIR}/dist.p12" \
+        -inkey    "${OUTPUT_DIR}/dist.key" \
+        -in       "${OUTPUT_DIR}/dist.crt" \
+        -certfile "${OUTPUT_DIR}/ca.crt" \
+        -passout  "pass:${CERT_PASS}" \
+        -legacy 2>/dev/null || \
+    openssl pkcs12 -export \
+        -out      "${OUTPUT_DIR}/dist.p12" \
+        -inkey    "${OUTPUT_DIR}/dist.key" \
+        -in       "${OUTPUT_DIR}/dist.crt" \
+        -certfile "${OUTPUT_DIR}/ca.crt" \
+        -passout  "pass:${CERT_PASS}" 2>/dev/null
+    ok "dist.p12 exported  (password: ${CERT_PASS})"
 
-openssl req -new \
-    -key    "${OUTPUT_DIR}/dist.key" \
-    -out    "${OUTPUT_DIR}/dist.csr" \
-    -config "${OUTPUT_DIR}/dist.cnf" \
-    2>/dev/null
+    # ── Keychain ──────────────────────────────────────────────────────────────
+    section "Step 4 — Build Keychain"
+    security delete-keychain "${KEYCHAIN_NAME}" 2>/dev/null || true
+    security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+    security list-keychains -d user \
+        -s "${KEYCHAIN_NAME}" $(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+    security default-keychain -s "${KEYCHAIN_NAME}"
+    security unlock-keychain  -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+    security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"
 
-openssl x509 -req \
-    -in         "${OUTPUT_DIR}/dist.csr" \
-    -CA         "${OUTPUT_DIR}/ca.crt" \
-    -CAkey      "${OUTPUT_DIR}/ca.key" \
-    -CAcreateserial \
-    -out        "${OUTPUT_DIR}/dist.crt" \
-    -days       "${CERT_VALIDITY_DAYS}" \
-    -extfile    "${OUTPUT_DIR}/dist.cnf" \
-    -extensions v3_req \
-    2>/dev/null
+    security import "${OUTPUT_DIR}/dist.p12" \
+        -k "${KEYCHAIN_NAME}" \
+        -P "${CERT_PASS}" \
+        -T /usr/bin/codesign \
+        -T /usr/bin/productbuild \
+        -T /usr/bin/security \
+        -f pkcs12
 
-ok "Distribution certificate generated."
-log "Subject: $(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -noout -subject 2>/dev/null)"
-log "Expiry : $(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -noout -enddate 2>/dev/null)"
+    # Tahoe fix: without set-key-partition-list, codesign throws
+    # errSecInternalComponent on macOS Tahoe (26) under launchd agents.
+    security set-key-partition-list \
+        -S apple-tool:,apple:,codesign: \
+        -s -k "${KEYCHAIN_PASS}" \
+        "${KEYCHAIN_NAME}"
+    ok "Keychain '${KEYCHAIN_NAME}' ready with Tahoe partition fix applied."
 
-# ── Step 3: PKCS#12 Bundle ────────────────────────────────────────────────────
-section "Step 3 — Exporting .p12 Bundle"
+    # ── Fake provisioning profile ─────────────────────────────────────────────
+    section "Step 5 — Fake Enterprise Provisioning Profile"
+    # Correct CMS structure — passes security cms -D and plutil checks.
+    # NOT Apple-signed — will NOT install on device. For pipeline test only.
+    PROFILE_UUID="$(uuidgen)"
+    CREATION_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    EXPIRY_DATE="$(iso_date_plus_days "${CERT_VALIDITY_DAYS}")"
+    CERT_DER_B64="$(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -outform DER 2>/dev/null | base64)"
 
-openssl pkcs12 -export \
-    -out        "${OUTPUT_DIR}/dist.p12" \
-    -inkey      "${OUTPUT_DIR}/dist.key" \
-    -in         "${OUTPUT_DIR}/dist.crt" \
-    -certfile   "${OUTPUT_DIR}/ca.crt" \
-    -passout    "pass:${CERT_PASS}" \
-    -legacy \
-    2>/dev/null || \
-openssl pkcs12 -export \
-    -out        "${OUTPUT_DIR}/dist.p12" \
-    -inkey      "${OUTPUT_DIR}/dist.key" \
-    -in         "${OUTPUT_DIR}/dist.crt" \
-    -certfile   "${OUTPUT_DIR}/ca.crt" \
-    -passout    "pass:${CERT_PASS}" \
-    2>/dev/null
-
-ok "dist.p12 created (password: ${CERT_PASS})"
-
-# ── Step 4: Keychain ──────────────────────────────────────────────────────────
-section "Step 4 — Setting Up Dedicated Build Keychain"
-
-# Remove stale keychain from a previous run
-security delete-keychain "${KEYCHAIN_NAME}" 2>/dev/null || true
-
-security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
-
-# Add to keychain search list
-security list-keychains -d user \
-    -s "${KEYCHAIN_NAME}" $(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
-
-security default-keychain -s "${KEYCHAIN_NAME}"
-security unlock-keychain  -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
-security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"   # 2h timeout
-
-log "Importing distribution certificate..."
-security import "${OUTPUT_DIR}/dist.p12" \
-    -k "${KEYCHAIN_NAME}" \
-    -P "${CERT_PASS}" \
-    -T /usr/bin/codesign \
-    -T /usr/bin/productbuild \
-    -T /usr/bin/security \
-    -f pkcs12
-
-# ── Tahoe fix: set-key-partition-list ─────────────────────────────────────────
-# Without this, codesign throws errSecInternalComponent on macOS Tahoe (26).
-# The -s -k flag uses the keychain password (not the cert password).
-log "Applying codesign partition list (Tahoe fix)..."
-security set-key-partition-list \
-    -S apple-tool:,apple:,codesign: \
-    -s -k "${KEYCHAIN_PASS}" \
-    "${KEYCHAIN_NAME}"
-
-ok "Keychain '${KEYCHAIN_NAME}' ready."
-log "Installed identity:"
-security find-identity -v -p codesigning "${KEYCHAIN_NAME}" | grep "iPhone Distribution" || \
-    warn "No iPhone Distribution identity found — check cert CN matches expected format."
-
-# ── Step 5: Fake Enterprise Provisioning Profile ──────────────────────────────
-section "Step 5 — Generating Fake Enterprise Provisioning Profile"
-# NOTE: A real .mobileprovision is CMS-signed by Apple's servers.
-# This fake profile has the correct structure and is CMS-signed by our
-# own CA.  It will pass structural checks (security cms -D, plutil) but
-# NOT Apple's trust chain verification.  Xcode will reject it at install
-# time — but the BUILD pipeline steps (UUID extraction, profile copy,
-# xcodebuild archive) will all work correctly, which is the test goal.
-
-PROFILE_UUID="$(uuidgen)"
-CREATION_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-EXPIRY_DATE="$(iso_date_plus_days ${CERT_VALIDITY_DAYS})"
-CERT_DER_B64="$(openssl x509 -in "${OUTPUT_DIR}/dist.crt" -outform DER 2>/dev/null | base64)"
-
-cat > "${OUTPUT_DIR}/profile.plist" << PLIST
+    cat > "${OUTPUT_DIR}/profile.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -324,15 +303,11 @@ cat > "${OUTPUT_DIR}/profile.plist" << PLIST
     <key>AppIDName</key>
     <string>${TEAM_NAME} Mobile Banking</string>
     <key>ApplicationIdentifierPrefix</key>
-    <array>
-        <string>${TEAM_ID}</string>
-    </array>
+    <array><string>${TEAM_ID}</string></array>
     <key>CreationDate</key>
     <date>${CREATION_DATE}</date>
     <key>DeveloperCertificates</key>
-    <array>
-        <data>${CERT_DER_B64}</data>
-    </array>
+    <array><data>${CERT_DER_B64}</data></array>
     <key>Entitlements</key>
     <dict>
         <key>application-identifier</key>
@@ -342,9 +317,7 @@ cat > "${OUTPUT_DIR}/profile.plist" << PLIST
         <key>get-task-allow</key>
         <false/>
         <key>keychain-access-groups</key>
-        <array>
-            <string>${TEAM_ID}.*</string>
-        </array>
+        <array><string>${TEAM_ID}.*</string></array>
         <key>aps-environment</key>
         <string>production</string>
     </dict>
@@ -355,9 +328,7 @@ cat > "${OUTPUT_DIR}/profile.plist" << PLIST
     <key>ProvisionsAllDevices</key>
     <true/>
     <key>TeamIdentifier</key>
-    <array>
-        <string>${TEAM_ID}</string>
-    </array>
+    <array><string>${TEAM_ID}</string></array>
     <key>TeamName</key>
     <string>${TEAM_NAME}</string>
     <key>TimeToLive</key>
@@ -370,60 +341,43 @@ cat > "${OUTPUT_DIR}/profile.plist" << PLIST
 </plist>
 PLIST
 
-# CMS-sign the plist (mirrors the structure of a real mobileprovision)
-openssl smime -sign \
-    -in       "${OUTPUT_DIR}/profile.plist" \
-    -out      "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" \
-    -signer   "${OUTPUT_DIR}/dist.crt" \
-    -inkey    "${OUTPUT_DIR}/dist.key" \
-    -certfile "${OUTPUT_DIR}/ca.crt" \
-    -outform  DER \
-    -nodetach \
-    2>/dev/null
+    openssl smime -sign \
+        -in       "${OUTPUT_DIR}/profile.plist" \
+        -out      "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" \
+        -signer   "${OUTPUT_DIR}/dist.crt" \
+        -inkey    "${OUTPUT_DIR}/dist.key" \
+        -certfile "${OUTPUT_DIR}/ca.crt" \
+        -outform  DER -nodetach 2>/dev/null
 
-ok "Fake provisioning profile created."
-log "  UUID : ${PROFILE_UUID}"
-log "  Name : ${TEAM_NAME} Enterprise Distribution"
-log "  Exp  : ${EXPIRY_DATE}"
+    PROFILE_INSTALL_DIR="${HOME}/Library/MobileDevice/Provisioning Profiles"
+    mkdir -p "${PROFILE_INSTALL_DIR}"
+    cp "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" \
+       "${PROFILE_INSTALL_DIR}/${PROFILE_UUID}.mobileprovision"
+    ok "Profile created and installed."
+    log "  UUID    : ${PROFILE_UUID}"
+    log "  Expires : ${EXPIRY_DATE}"
 
-# Install to MobileDevice profiles directory (Xcode looks here)
-PROFILE_DIR="${HOME}/Library/MobileDevice/Provisioning Profiles"
-mkdir -p "${PROFILE_DIR}"
-cp "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" \
-   "${PROFILE_DIR}/${PROFILE_UUID}.mobileprovision"
-ok "Profile installed to: ${PROFILE_DIR}/${PROFILE_UUID}.mobileprovision"
-
-# ── Step 6: Entitlements.plist ────────────────────────────────────────────────
-section "Step 6 — Creating Entitlements.plist"
-
-cat > "${OUTPUT_DIR}/Entitlements.plist" << PLIST
+    # ── Entitlements.plist ────────────────────────────────────────────────────
+    section "Step 6 — Entitlements.plist"
+    cat > "${OUTPUT_DIR}/Entitlements.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Team and app identity -->
     <key>application-identifier</key>
     <string>${TEAM_ID}.${BUNDLE_ID}</string>
     <key>com.apple.developer.team-identifier</key>
     <string>${TEAM_ID}</string>
-
-    <!-- Keychain sharing — required for banking apps -->
     <key>keychain-access-groups</key>
     <array>
         <string>${TEAM_ID}.${BUNDLE_ID}</string>
         <string>${TEAM_ID}.com.yourbank.shared</string>
     </array>
-
-    <!-- Push notifications (production for enterprise) -->
     <key>aps-environment</key>
     <string>production</string>
-
-    <!-- Distribution build — no debugger attach allowed -->
     <key>get-task-allow</key>
     <false/>
-
-    <!-- Associated domains (replace with your real domains in prod) -->
     <key>com.apple.developer.associated-domains</key>
     <array>
         <string>applinks:yourbank.com</string>
@@ -432,23 +386,18 @@ cat > "${OUTPUT_DIR}/Entitlements.plist" << PLIST
 </dict>
 </plist>
 PLIST
-ok "Entitlements.plist created."
+    ok "Entitlements.plist created."
 
-# ── Step 7: ExportOptions — Dummy (test use) ──────────────────────────────────
-section "Step 7 — Creating ExportOptions-dummy.plist"
-# Uses signingCertificate="-" (ad-hoc) because -exportArchive with
-# method:enterprise requires an Apple-signed provisioning profile.
-# The Jenkinsfile bypasses -exportArchive and manually packages the IPA instead.
-# This file is kept for reference and documentation purposes.
-
-cat > "${OUTPUT_DIR}/ExportOptions-dummy.plist" << PLIST
+    # ── ExportOptions (dummy) ─────────────────────────────────────────────────
+    section "Step 7 — ExportOptions-dummy.plist (test reference)"
+    cat > "${OUTPUT_DIR}/ExportOptions-dummy.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Dummy/test use only — no Apple Developer Account required -->
-    <!-- In production replace with ExportOptions-enterprise.plist  -->
+    <!-- TEST USE ONLY — Jenkinsfile bypasses -exportArchive for dummy builds -->
+    <!-- and manually packages Payload/ as IPA instead.                        -->
     <key>method</key>
     <string>ad-hoc</string>
     <key>signingStyle</key>
@@ -466,24 +415,21 @@ cat > "${OUTPUT_DIR}/ExportOptions-dummy.plist" << PLIST
 </dict>
 </plist>
 PLIST
-ok "ExportOptions-dummy.plist created."
+    ok "ExportOptions-dummy.plist created."
 
-# ── Step 8: ExportOptions — Enterprise (production template) ──────────────────
-section "Step 8 — Creating ExportOptions-enterprise.plist (production template)"
-# Replace REAL_TEAM_ID, profile name, and bundle ID with your org's values.
-
-cat > "${OUTPUT_DIR}/ExportOptions-enterprise.plist" << PLIST
+    # ── ExportOptions (enterprise template) ───────────────────────────────────
+    section "Step 8 — ExportOptions-enterprise.plist (production template)"
+    cat > "${OUTPUT_DIR}/ExportOptions-enterprise.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- ═══ PRODUCTION TEMPLATE — fill in real values before use ═══ -->
+    <!-- PRODUCTION TEMPLATE — replace REAL_TEAM_ID and profile name -->
 
     <key>method</key>
     <string>enterprise</string>
 
-    <!-- Your Apple Developer Enterprise Program Team ID -->
     <key>teamID</key>
     <string>REAL_TEAM_ID</string>
 
@@ -493,39 +439,30 @@ cat > "${OUTPUT_DIR}/ExportOptions-enterprise.plist" << PLIST
     <key>signingCertificate</key>
     <string>iPhone Distribution</string>
 
-    <!-- Maps bundle ID → provisioning profile name in Apple portal -->
     <key>provisioningProfiles</key>
     <dict>
         <key>${BUNDLE_ID}</key>
         <string>${TEAM_NAME} Enterprise Distribution</string>
-        <!-- Add extensions here if your app has any:           -->
-        <!-- <key>${BUNDLE_ID}.NotificationExtension</key>      -->
-        <!-- <string>Profile Name for Extension</string>        -->
+        <!-- Extensions — add one entry per app extension:      -->
+        <!-- <key>${BUNDLE_ID}.ShareExtension</key>             -->
+        <!-- <string>Profile name for ShareExtension</string>   -->
     </dict>
 
     <key>compileBitcode</key>
     <false/>
-
     <key>stripSwiftSymbols</key>
     <true/>
-
-    <!-- <none> = no app thinning; use device model for slimmer IPA -->
     <key>thinning</key>
     <string>&lt;none&gt;</string>
-
-    <!-- Uncomment for on-demand resources:                     -->
-    <!-- <key>embedOnDemandResourcesAssetPacksInBundle</key>    -->
-    <!-- <true/>                                                -->
 </dict>
 </plist>
 PLIST
-ok "ExportOptions-enterprise.plist (template) created."
+    ok "ExportOptions-enterprise.plist (template) created."
 
-# ── Step 9: Metadata file for Jenkins / teardown ──────────────────────────────
-section "Step 9 — Writing Metadata"
-
-cat > "${OUTPUT_DIR}/signing-env.sh" << ENV
-# Source this in the Jenkinsfile sh block or teardown script:
+    # ── signing-env.sh metadata ───────────────────────────────────────────────
+    section "Step 9 — Metadata for Jenkinsfile"
+    cat > "${OUTPUT_DIR}/signing-env.sh" << ENV
+# Source this file in Jenkins sh blocks or teardown scripts:
 #   source dummy-signing/signing-env.sh
 export DUMMY_KEYCHAIN_NAME="${KEYCHAIN_NAME}"
 export DUMMY_KEYCHAIN_PASS="${KEYCHAIN_PASS}"
@@ -536,29 +473,338 @@ export DUMMY_BUNDLE_ID="${BUNDLE_ID}"
 export DUMMY_PROFILE_UUID="${PROFILE_UUID}"
 export DUMMY_OUTPUT_DIR="${OUTPUT_DIR}"
 ENV
-chmod 600 "${OUTPUT_DIR}/signing-env.sh"
-ok "signing-env.sh written (sourced by Jenkinsfile)."
+    chmod 600 "${OUTPUT_DIR}/signing-env.sh"
+    ok "signing-env.sh written."
 
-# ── Final Summary ─────────────────────────────────────────────────────────────
-section "Summary"
-echo ""
-echo -e "${BOLD}Generated files:${NC}"
-ls -lh "${OUTPUT_DIR}/" | grep -v '^total' | awk '{printf "  %-35s %s\n", $NF, $5}'
-echo ""
-echo -e "${BOLD}Keychain:${NC}   ${KEYCHAIN_NAME}"
-echo -e "${BOLD}Identity:${NC}"
-security find-identity -v -p codesigning "${KEYCHAIN_NAME}" 2>/dev/null \
-    | grep -v "^0 " | sed 's/^/  /' || true
-echo ""
-echo -e "${BOLD}Profile UUID:${NC}  ${PROFILE_UUID}"
-echo -e "${BOLD}Expires:${NC}       ${EXPIRY_DATE}"
-echo ""
-warn "This certificate is NOT trusted by Apple and cannot be used to install"
-warn "the IPA on any device.  It is for PIPELINE TESTING ONLY."
-echo ""
-ok "Dummy signing environment ready."
-ok "Run the Jenkins pipeline with DUMMY_SIGNING=true to build the test IPA."
-echo ""
-echo -e "${CYAN}Cleanup when done:${NC}  ./generate-dummy-signing.sh --clean"
-echo -e "${CYAN}Verify setup:${NC}       ./generate-dummy-signing.sh --verify"
-echo ""
+    # ── Summary ───────────────────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${BOLD}${GREEN}✓ Dummy signing environment ready${NC}"
+    echo    "  ─────────────────────────────────────────────────────────"
+    echo -e "  ${BOLD}Keychain:${NC}      ${KEYCHAIN_NAME}"
+    echo -e "  ${BOLD}Identity:${NC}"
+    security find-identity -v -p codesigning "${KEYCHAIN_NAME}" 2>/dev/null \
+        | grep -v "^0 " | sed 's/^/    /' || true
+    echo ""
+    echo -e "  ${BOLD}Profile UUID:${NC}  ${PROFILE_UUID}"
+    echo -e "  ${BOLD}Expires:${NC}       ${EXPIRY_DATE}"
+    echo ""
+    echo -e "  ${BOLD}Generated files:${NC}"
+    ls -1 "${OUTPUT_DIR}/" | grep -v '^\.' | sed 's/^/    /'
+    echo ""
+    echo -e "  ${YELLOW}⚠  This cert is NOT Apple-trusted.  Pipeline testing only.${NC}"
+    echo -e "  ${YELLOW}   The IPA cannot be installed on any device.${NC}"
+    echo ""
+    press_enter
+}
+
+# ── Option 2: Verify ──────────────────────────────────────────────────────────
+do_verify() {
+    print_banner
+    echo -e "  ${BOLD}Verify Existing Setup${NC}\n"
+
+    local pass=0 fail=0
+
+    check_item() {
+        local label="$1" result="$2"
+        if [[ -n "${result}" ]]; then
+            echo -e "  ${GREEN}✓${NC}  ${label}"
+            pass=$((pass+1))
+        else
+            echo -e "  ${RED}✗${NC}  ${label}"
+            fail=$((fail+1))
+        fi
+    }
+
+    check_item "Output directory exists" \
+        "$(ls "${OUTPUT_DIR}" 2>/dev/null | head -1)"
+    check_item "CA certificate (ca.crt)" \
+        "$(ls "${OUTPUT_DIR}/ca.crt" 2>/dev/null)"
+    check_item "Distribution certificate (dist.crt)" \
+        "$(ls "${OUTPUT_DIR}/dist.crt" 2>/dev/null)"
+    check_item "PKCS#12 bundle (dist.p12)" \
+        "$(ls "${OUTPUT_DIR}/dist.p12" 2>/dev/null)"
+    check_item "Fake provisioning profile (${APP_NAME}.mobileprovision)" \
+        "$(ls "${OUTPUT_DIR}/${APP_NAME}.mobileprovision" 2>/dev/null)"
+    check_item "Entitlements.plist" \
+        "$(ls "${OUTPUT_DIR}/Entitlements.plist" 2>/dev/null)"
+    check_item "ExportOptions-dummy.plist" \
+        "$(ls "${OUTPUT_DIR}/ExportOptions-dummy.plist" 2>/dev/null)"
+    check_item "ExportOptions-enterprise.plist" \
+        "$(ls "${OUTPUT_DIR}/ExportOptions-enterprise.plist" 2>/dev/null)"
+    check_item "signing-env.sh metadata" \
+        "$(ls "${OUTPUT_DIR}/signing-env.sh" 2>/dev/null)"
+
+    local identity
+    identity=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+               2>/dev/null | grep "iPhone Distribution" | head -1 || echo "")
+    check_item "Signing identity in keychain (${KEYCHAIN_NAME})" "${identity}"
+
+    local profile_installed
+    profile_installed=$(ls "${HOME}/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision \
+                        2>/dev/null | head -1 || echo "")
+    check_item "Provisioning profile installed to MobileDevice directory" \
+        "${profile_installed}"
+
+    echo ""
+    echo "  ─────────────────────────────────────────────────────────"
+    if [[ "${fail}" -eq 0 ]]; then
+        echo -e "  ${GREEN}${BOLD}All ${pass} checks passed.${NC}  Ready to use in Jenkins."
+    else
+        echo -e "  ${RED}${BOLD}${fail} check(s) failed${NC} (${pass} passed)."
+        echo -e "  ${YELLOW}Run 'Generate dummy signing environment' to rebuild.${NC}"
+    fi
+    echo ""
+
+    if [[ -n "${identity}" ]]; then
+        echo -e "  ${BOLD}Identity:${NC}  ${identity}"
+    fi
+    if [[ -f "${OUTPUT_DIR}/signing-env.sh" ]]; then
+        local uuid
+        uuid=$(grep DUMMY_PROFILE_UUID "${OUTPUT_DIR}/signing-env.sh" \
+               | cut -d= -f2 | tr -d '"' || echo "unknown")
+        echo -e "  ${BOLD}Profile UUID:${NC}  ${uuid}"
+    fi
+    echo ""
+    press_enter
+}
+
+# ── Option 3: Show Identities ─────────────────────────────────────────────────
+do_show_identities() {
+    print_banner
+    echo -e "  ${BOLD}Signing Identities${NC}\n"
+
+    echo -e "  ${BOLD}Dummy keychain (${KEYCHAIN_NAME}):${NC}"
+    local dummy_ids
+    dummy_ids=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+                2>/dev/null || echo "")
+    if [[ -n "${dummy_ids}" ]]; then
+        echo "${dummy_ids}" | grep -v "^0 " | sed 's/^/    /'
+    else
+        echo -e "    ${DIM}(keychain not found or no identities)${NC}"
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Login keychain (all codesigning identities):${NC}"
+    local login_ids
+    login_ids=$(security find-identity -v -p codesigning 2>/dev/null \
+                | grep "iPhone\|Apple\|Developer" || echo "")
+    if [[ -n "${login_ids}" ]]; then
+        echo "${login_ids}" | sed 's/^/    /'
+    else
+        echo -e "    ${DIM}(none found)${NC}"
+    fi
+
+    echo ""
+    press_enter
+}
+
+# ── Option 4: Show Installed Profiles ────────────────────────────────────────
+do_show_profiles() {
+    print_banner
+    echo -e "  ${BOLD}Installed Provisioning Profiles${NC}\n"
+
+    local PROFILE_DIR="${HOME}/Library/MobileDevice/Provisioning Profiles"
+    local count=0
+
+    if [[ ! -d "${PROFILE_DIR}" ]]; then
+        echo -e "  ${DIM}Directory not found: ${PROFILE_DIR}${NC}"
+        press_enter
+        return
+    fi
+
+    while IFS= read -r -d '' f; do
+        count=$((count+1))
+        local decoded
+        decoded="$(mktemp "${TMPDIR:-/tmp}/profile-view.XXXXXX.plist")"
+        # shellcheck disable=SC2064
+        trap "rm -f '${decoded}'" RETURN
+
+        if security cms -D -i "$f" -o "${decoded}" 2>/dev/null; then
+            local name uuid expiry
+            name=$(plutil -extract Name raw "${decoded}" 2>/dev/null || echo "(unknown)")
+            uuid=$(plutil -extract UUID raw "${decoded}" 2>/dev/null || echo "(unknown)")
+            expiry=$(plutil -extract ExpirationDate raw "${decoded}" 2>/dev/null || echo "unknown")
+
+            # Expiry colouring
+            local expiry_colour="${GREEN}"
+            if [[ "${expiry}" != "unknown" ]]; then
+                local expiry_epoch now_epoch days_left
+                expiry_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${expiry}" "+%s" 2>/dev/null \
+                               || date -d "${expiry}" "+%s" 2>/dev/null || echo 0)
+                now_epoch=$(date +%s)
+                days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+                if [[ "${days_left}" -lt 0 ]]; then
+                    expiry_colour="${RED}"
+                    expiry="${expiry} (EXPIRED)"
+                elif [[ "${days_left}" -lt 30 ]]; then
+                    expiry_colour="${YELLOW}"
+                    expiry="${expiry} (${days_left}d left)"
+                else
+                    expiry="${expiry} (${days_left}d left)"
+                fi
+            fi
+
+            echo -e "  ${BOLD}${count}. ${name}${NC}"
+            printf  "     %-10s %s\n" "UUID:"    "${uuid}"
+            printf  "     %-10s " "Expires:"
+            echo -e "${expiry_colour}${expiry}${NC}"
+            printf  "     %-10s %s\n" "File:" "$(basename "$f")"
+            echo ""
+        else
+            echo -e "  ${count}. ${DIM}$(basename "$f") — could not decode${NC}\n"
+        fi
+        rm -f "${decoded}"
+    done < <(find "${PROFILE_DIR}" -maxdepth 1 -name "*.mobileprovision" -print0 2>/dev/null)
+
+    if [[ "${count}" -eq 0 ]]; then
+        echo -e "  ${DIM}No provisioning profiles installed.${NC}"
+    else
+        echo -e "  ${BOLD}Total:${NC} ${count} profile(s)"
+    fi
+    echo ""
+    press_enter
+}
+
+# ── Option 5: Clean Up ────────────────────────────────────────────────────────
+do_clean() {
+    print_banner
+    echo -e "  ${BOLD}Clean Up${NC}\n"
+    echo    "  This will delete:"
+    echo -e "  ${RED}•${NC}  Keychain:     ${KEYCHAIN_NAME}"
+    echo -e "  ${RED}•${NC}  Output dir:   ${OUTPUT_DIR}"
+    echo -e "  ${RED}•${NC}  Profile from: ~/Library/MobileDevice/Provisioning Profiles/"
+    echo    "  (only the profile installed by this script will be removed)"
+    echo ""
+
+    if ! confirm "Continue with cleanup?"; then
+        echo ""
+        warn "Cancelled — nothing was deleted."
+        press_enter
+        return
+    fi
+
+    echo ""
+    # Remove keychain
+    if security delete-keychain "${KEYCHAIN_NAME}" 2>/dev/null; then
+        ok "Keychain '${KEYCHAIN_NAME}' deleted."
+    else
+        warn "Keychain not found — already removed."
+    fi
+    security list-keychains -d user -s login.keychain 2>/dev/null || true
+    security default-keychain -s login.keychain 2>/dev/null || true
+
+    # Remove installed profile (by UUID stored in signing-env.sh)
+    if [[ -f "${OUTPUT_DIR}/signing-env.sh" ]]; then
+        local uuid
+        uuid=$(grep DUMMY_PROFILE_UUID "${OUTPUT_DIR}/signing-env.sh" \
+               | cut -d= -f2 | tr -d '"' || echo "")
+        local profile_path="${HOME}/Library/MobileDevice/Provisioning Profiles/${uuid}.mobileprovision"
+        if [[ -n "${uuid}" && -f "${profile_path}" ]]; then
+            rm -f "${profile_path}"
+            ok "Provisioning profile removed (UUID: ${uuid})."
+        else
+            warn "Profile not found in MobileDevice directory (may already be removed)."
+        fi
+    fi
+
+    # Remove output directory
+    rm -rf "${OUTPUT_DIR}"
+    ok "Output directory removed."
+
+    echo ""
+    ok "Clean up complete."
+    press_enter
+}
+
+# ── Option 6: Show/Edit Config ────────────────────────────────────────────────
+do_show_config() {
+    print_banner
+    echo -e "  ${BOLD}Configuration${NC}\n"
+    print_config
+    echo    "  To change any value, open this file in your editor:"
+    echo -e "  ${CYAN}  ${SCRIPT_DIR}/generate-dummy-signing.sh${NC}"
+    echo ""
+    echo    "  Look for the '── Configuration ──' section near the top."
+    echo    "  After editing, re-run the script and choose option 1 to regenerate."
+    echo ""
+    press_enter
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN MENU
+# ══════════════════════════════════════════════════════════════════════════════
+show_menu() {
+    while true; do
+        print_banner
+        print_status_badge
+
+        echo -e "  ${BOLD}What would you like to do?${NC}"
+        echo ""
+        echo    "   1)  Generate dummy signing environment"
+        echo    "       (creates cert, keychain, profile, plists)"
+        echo ""
+        echo    "   2)  Verify existing setup"
+        echo    "       (check all files and keychain are present)"
+        echo ""
+        echo    "   3)  Show signing identities"
+        echo    "       (list certs installed in keychains)"
+        echo ""
+        echo    "   4)  Show installed provisioning profiles"
+        echo    "       (list profiles with name, UUID, expiry)"
+        echo ""
+        echo    "   5)  Clean up"
+        echo    "       (remove keychain and all generated files)"
+        echo ""
+        echo    "   6)  Show / change configuration"
+        echo    "       (app name, bundle ID, team, keychain name)"
+        echo ""
+        echo    "   7)  Exit"
+        echo ""
+        echo    "  ─────────────────────────────────────────────────────────"
+        read -r -p "  Enter choice [1-7]: " choice
+        echo ""
+
+        case "${choice}" in
+            1) do_generate      ;;
+            2) do_verify        ;;
+            3) do_show_identities ;;
+            4) do_show_profiles ;;
+            5) do_clean         ;;
+            6) do_show_config   ;;
+            7)
+                echo -e "  ${DIM}Bye.${NC}"
+                echo ""
+                exit 0
+                ;;
+            *)
+                warn "Invalid choice '${choice}' — enter a number from 1 to 7."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# Non-interactive flags kept for Jenkins pipeline calls:
+#   --generate | --verify | --clean | --identities
+# No args → interactive menu
+# ══════════════════════════════════════════════════════════════════════════════
+case "${1:-menu}" in
+    --generate)   do_generate        ;;
+    --verify)     do_verify          ;;
+    --clean)      do_clean           ;;
+    --identities) do_show_identities ;;
+    menu)         show_menu          ;;
+    *)
+        err "Unknown argument: $1"
+        echo ""
+        echo "Usage:"
+        echo "  ./generate-dummy-signing.sh              # interactive menu"
+        echo "  ./generate-dummy-signing.sh --generate   # generate (non-interactive)"
+        echo "  ./generate-dummy-signing.sh --verify     # verify   (non-interactive)"
+        echo "  ./generate-dummy-signing.sh --clean      # clean up (non-interactive)"
+        echo "  ./generate-dummy-signing.sh --identities # show identities"
+        exit 1
+        ;;
+esac
