@@ -126,29 +126,27 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
                 cd "${env.APP_NAME}/ios/.."   # project root
 
+                mkdir -p "\${WORKSPACE}/build"
+
                 if ${params.USE_PNPM}; then
                     echo "── Package Manager: pnpm ────────────────────────────────"
 
-                    # Install pnpm if not already available
                     if ! command -v pnpm &>/dev/null; then
                         echo "pnpm not found — installing globally via npm..."
                         npm install -g pnpm
                     fi
                     echo "pnpm version: \$(pnpm --version)"
 
-                    # Ensure .npmrc has node-linker=hoisted for Metro/React Native
                     if ! grep -q "node-linker=hoisted" .npmrc 2>/dev/null; then
                         echo "node-linker=hoisted" >> .npmrc
                         echo "shamefully-hoist=true" >> .npmrc
-                        echo "Added hoisted node-linker to .npmrc for Metro compatibility."
                     fi
 
-                    # --frozen-lockfile = strict mode (like npm ci)
-                    # --prefer-offline  = use store cache when possible
+                    # Save output for LLM — pnpm errors are easy to extract from its output
                     pnpm install \\
                         --frozen-lockfile \\
                         --prefer-offline \\
-                        --reporter=append-only
+                        --reporter=append-only 2>&1 | tee "\${WORKSPACE}/build/node-install.log"
 
                 else
                     echo "── Package Manager: npm ─────────────────────────────────"
@@ -157,7 +155,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         --prefer-offline \\
                         --no-audit \\
                         --no-fund \\
-                        --no-progress
+                        --no-progress 2>&1 | tee "\${WORKSPACE}/build/node-install.log"
                 fi
 
                 echo "── Applying environment config ───────────────────────────"
@@ -180,15 +178,16 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                 sh """#!/bin/bash
                 set -euo pipefail
                 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-                export LANG=en_US.UTF-8    # required by CocoaPods unicode normalisation
+                export LANG=en_US.UTF-8
                 export COCOAPODS_DISABLE_STATS=1
+                mkdir -p "\${WORKSPACE}/build"
 
                 echo "pod version: \$(pod --version)"
+                cd ios
 
-                cd ios   # adjust to your project structure
-
-                # Use --silent to suppress per-pod install noise; remove for debugging
-                pod install
+                # Save pod install output for LLM analysis — pod errors are
+                # often buried in verbose resolver output
+                pod install 2>&1 | tee "\${WORKSPACE}/build/pod-install.log"
 
                 echo "CocoaPods install complete."
                 """
@@ -348,6 +347,11 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     echo "  Identity  : ${certIdentity}"
                     echo "  Dummy     : ${params.DUMMY_SIGNING}"
 
+                    # Save BOTH raw and xcpretty-filtered output.
+                    # raw:    100k+ lines — mined by extract-build-errors.sh
+                    # pretty: 50-500 lines — preferred input for LLM analysis
+                    # The pipe must not suppress the exit code, so use a PIPESTATUS check.
+                    set -o pipefail
                     xcodebuild archive \\
                         -workspace "${env.WORKSPACE}" \\
                         -scheme    "${env.SCHEME}" \\
@@ -360,9 +364,12 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         CODE_SIGNING_REQUIRED=YES \\
                         CODE_SIGNING_ALLOWED=YES \\
                         ${keychainFlag} \\
-                        | xcpretty
+                        2>&1 | tee "\${WORKSPACE}/build/xcodebuild-raw.log" \\
+                               | xcpretty 2>&1 | tee "\${WORKSPACE}/build/xcodebuild-errors.log"
 
                     echo "Archive complete: build/${env.APP_NAME}.xcarchive"
+                    echo "Raw log   : \$(wc -l < "\${WORKSPACE}/build/xcodebuild-raw.log" | tr -d ' ') lines"
+                    echo "Error log : \$(wc -l < "\${WORKSPACE}/build/xcodebuild-errors.log" | tr -d ' ') lines"
                     """
                 }
             }
@@ -562,72 +569,65 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     def llmAvailable = false
 
                     try {
-                        // Get the analysis script from the repo
+                        // Get the analysis scripts from the repo.
+                        // The workspace may be empty if failure was very early;
+                        // checkout here ensures the scripts are always available.
                         checkout scm
 
-                        // 1. Fetch full console log via Jenkins REST API
-                        //    curl is sandbox-safe (it's a sh step, not a Groovy API)
-                        withCredentials([usernamePassword(
-                            credentialsId: 'jenkins-admin-creds',
-                            usernameVariable: 'JENKINS_USER',
-                            passwordVariable: 'JENKINS_PASS'
-                        )]) {
-                            sh """#!/bin/bash
-                            set -euo pipefail
-                            export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+                        // ── Smart log extraction ──────────────────────────────
+                        // xcodebuild generates 100k+ raw lines.  extract-build-errors.sh
+                        // distils this to ≤200 lines of actual errors:
+                        //   Priority 1 — xcodebuild-errors.log (xcpretty output, saved
+                        //                during Archive stage via tee) — already filtered
+                        //                to errors/warnings, typically 50-500 lines.
+                        //   Priority 2 — smart grep-based extraction from raw log
+                        //                (BUILD FAILED context, compiler errors, codesign,
+                        //                pod, Metro) — never sends raw compile noise.
+                        // No Jenkins REST API call or jenkins-admin-creds needed.
+                        sh """#!/bin/bash
+                        set -euo pipefail
+                        export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+                        export WORKSPACE="\${WORKSPACE}"
+                        export MAX_LINES=200
+                        export MAX_LINE_LEN=300
 
-                            echo "Fetching console log from Jenkins REST API..."
-                            curl -sf --max-time 30 \\
-                                --user "\${JENKINS_USER}:\${JENKINS_PASS}" \\
-                                "${env.BUILD_URL}consoleText" \\
-                                | tail -200 > build-log-tail.txt \\
-                                || echo "Log fetch failed — ensure jenkins-admin-creds is configured." > build-log-tail.txt
+                        chmod +x jenkins-k8s/shared/extract-build-errors.sh
+                        bash jenkins-k8s/shared/extract-build-errors.sh > build-error-report.txt 2>/dev/null || true
 
-                            # iOS-specific error extraction: codesign, xcodebuild, pod, pnpm/Metro
-                            grep -iE \\
-                                "error:|Error:|FAILED|errSec|errAuth|codesign failed|code sign|\\
-                                 xcodebuild.*error|Build input file cannot be found|\\
-                                 pod.*error|pod install failed|\\
-                                 cannot find module|Metro bundler|\\
-                                 npm ERR|pnpm ERR|node_modules|\\
-                                 provisioning profile|certificate|keychain|\\
-                                 BUILD_FAILED|CompileError|LinkerError" \\
-                                build-log-tail.txt | head -40 > build-error-snippet.txt || true
+                        REPORT_LINES=\$(wc -l < build-error-report.txt | tr -d ' ')
+                        echo "Error report: \${REPORT_LINES} lines (sent to LLM)"
+                        """
 
-                            echo "Log lines    : \$(wc -l < build-log-tail.txt | tr -d ' ')"
-                            echo "Error lines  : \$(wc -l < build-error-snippet.txt | tr -d ' ')"
-                            """
-                        }
-
-                        // 2. Run LLM analysis with iOS-specific context
+                        // 2. Run LLM analysis with the concise error report
                         sh """#!/bin/bash
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        # Core context variables consumed by llm-analysis.sh
                         export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
-                        export ERROR_SNIPPET="\$(cat build-error-snippet.txt 2>/dev/null || echo 'Not extracted')"
-                        export LOG_TAIL="\$(cat build-log-tail.txt 2>/dev/null || echo 'Not available')"
                         export BUILD_NUMBER="${env.BUILD_NUMBER}"
                         export JOB_NAME="${env.JOB_NAME}"
-
-                        # Additional context variables for the enhanced prompt
                         export BUILD_TYPE="iOS-Enterprise"
                         export APP_NAME="${env.APP_NAME}"
                         export ENVIRONMENT="${params.ENVIRONMENT}"
+
+                        # ERROR_SNIPPET: the smart-extracted error report (≤200 lines)
+                        # LOG_TAIL: kept for compatibility but set to same content
+                        export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Extraction failed')"
+                        export LOG_TAIL="\${ERROR_SNIPPET}"
+
                         export EXTRA_CONTEXT="Signing mode: ${params.DUMMY_SIGNING ? 'dummy self-signed (no Apple account)' : 'real enterprise certificate'}.
 macOS Tahoe (26) — known codesign issues:
-  - errSecInternalComponent: missing set-key-partition-list on keychain
-  - errSecInteractionNotAllowed: keychain locked under launchd agent
-  - Provisioning profile must be CMS-signed by Apple for device install
+  - errSecInternalComponent: missing security set-key-partition-list on keychain
+  - errSecInteractionNotAllowed: keychain locked under launchd Jenkins agent
+  - Provisioning profile requires Apple CMS signing for device installation
 React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages.
 CocoaPods for iOS dependency management.
-xcodebuild archive then manual Payload/ IPA packaging (DUMMY_SIGNING=${params.DUMMY_SIGNING})."
+Archive stage pipes through tee + xcpretty; raw log saved to build/xcodebuild-raw.log.
+DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, not -exportArchive."
 
                         chmod +x jenkins-k8s/shared/llm-analysis.sh
                         bash jenkins-k8s/shared/llm-analysis.sh
-
-                        echo "LLM analysis written to: llm-analysis.md"
+                        echo "LLM analysis complete → llm-analysis.md"
                         """
 
                         // 3. Archive the report as a build artifact
