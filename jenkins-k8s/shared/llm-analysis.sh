@@ -1,5 +1,15 @@
 #!/bin/bash
 # LLM failure analysis: queries both Ollama endpoints, picks best available models
+# Env vars consumed:
+#   FAILED_STAGE    — stage name where the build broke
+#   ERROR_SNIPPET   — grep-extracted error lines
+#   LOG_TAIL        — last N lines of the console log
+#   BUILD_NUMBER    — Jenkins build number
+#   JOB_NAME        — Jenkins job name
+#   BUILD_TYPE      — e.g. "iOS-Enterprise", "Android-APK" (optional)
+#   APP_NAME        — application name (optional)
+#   ENVIRONMENT     — target env e.g. Sit/Uat/Prod (optional)
+#   EXTRA_CONTEXT   — any additional context for the LLM (optional)
 set -euo pipefail
 
 FAILED_STAGE="${FAILED_STAGE:-Unknown}"
@@ -7,6 +17,10 @@ ERROR_SNIPPET="${ERROR_SNIPPET:-No error snippet provided}"
 LOG_TAIL="${LOG_TAIL:-No log available}"
 BUILD_NUMBER="${BUILD_NUMBER:-0}"
 JOB_NAME="${JOB_NAME:-unknown}"
+BUILD_TYPE="${BUILD_TYPE:-}"
+APP_NAME="${APP_NAME:-}"
+ENVIRONMENT="${ENVIRONMENT:-}"
+EXTRA_CONTEXT="${EXTRA_CONTEXT:-}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 ENDPOINT_A="http://100.89.50.27:11434"
@@ -16,11 +30,31 @@ TIMEOUT=120
 # Priority order for model selection (most capable first)
 MODEL_PRIORITY="qwen2.5-coder qwen2.5 deepseek-coder codellama llama3 llama2 mistral phi"
 
-PROMPT="You are a CI/CD build failure analyst. Analyze this build failure.
+# Build optional context header
+CONTEXT_HEADER=""
+if [ -n "${BUILD_TYPE}" ]; then
+    CONTEXT_HEADER="${CONTEXT_HEADER}Build Type: ${BUILD_TYPE}\n"
+fi
+if [ -n "${APP_NAME}" ]; then
+    CONTEXT_HEADER="${CONTEXT_HEADER}Application: ${APP_NAME}\n"
+fi
+if [ -n "${ENVIRONMENT}" ]; then
+    CONTEXT_HEADER="${CONTEXT_HEADER}Target Environment: ${ENVIRONMENT}\n"
+fi
+if [ -n "${EXTRA_CONTEXT}" ]; then
+    CONTEXT_HEADER="${CONTEXT_HEADER}\nAdditional Context:\n${EXTRA_CONTEXT}\n"
+fi
 
+PROMPT="You are a senior CI/CD build failure analyst specialising in mobile (iOS/Android) builds on Jenkins.
+Analyse this build failure and give actionable output.
+
+$(printf '%b' "${CONTEXT_HEADER}")
+Job: ${JOB_NAME}
+Build #: ${BUILD_NUMBER}
 Failed Stage: ${FAILED_STAGE}
+Timestamp: ${TIMESTAMP}
 
-Error Snippet:
+Error Snippet (grep-extracted error lines):
 \`\`\`
 ${ERROR_SNIPPET}
 \`\`\`
@@ -30,25 +64,31 @@ Console Log Tail (last 200 lines):
 ${LOG_TAIL}
 \`\`\`
 
-Respond in Markdown with these sections:
+Respond in Markdown with exactly these sections:
+
 ## Root Cause
-1-2 sentences identifying what broke and why.
+1–2 sentences identifying what broke and why.
 
 ## Likely Fix
-Numbered steps with code blocks where relevant.
+Numbered steps to resolve the issue. Include code blocks / commands where relevant.
+
+## Preventive Measure
+One suggestion to stop this class of failure recurring in CI.
 
 ## Confidence
 High / Medium / Low with one sentence of reasoning.
 
 ## Failure Flow
-A Mermaid flowchart showing which step broke and why.
+A Mermaid flowchart showing which step broke and what triggered it.
 \`\`\`mermaid
 flowchart TD
+    A[Build triggered] --> B[${FAILED_STAGE}]
+    B --> C{Failure}
     ...
 \`\`\`
 
 ## References
-Links or notes to relevant docs or SDK notes."
+Relevant documentation links, error codes, or SDK notes."
 
 # Returns the best available model name from an Ollama endpoint,
 # or empty string if endpoint is unreachable.

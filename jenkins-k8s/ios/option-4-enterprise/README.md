@@ -308,6 +308,142 @@ Trigger the pipeline with `DUMMY_SIGNING = false`. Jenkins will:
 
 ---
 
+## LLM-Powered Build Failure Analysis
+
+When a build fails, the pipeline automatically:
+
+1. Fetches the console log via Jenkins REST API (`curl` — sandbox-safe)
+2. Extracts iOS-specific error lines (codesign, xcodebuild, pod, Metro)
+3. Queries both Ollama endpoints over Tailscale
+4. Selects the best available model (priority: qwen2.5-coder → qwen2.5 → deepseek-coder → codellama → llama3)
+5. Generates `llm-analysis.md` with Root Cause / Likely Fix / Mermaid flowchart / References
+6. Archives `llm-analysis.md` as a Jenkins artifact
+7. Embeds the report in the failure email (first 8000 chars + download link)
+
+### Prerequisites
+
+**1. Ollama must be reachable from the Mac Mini via Tailscale:**
+
+```
+Endpoint A: http://100.89.50.27:11434
+Endpoint B: http://100.104.14.62:21434
+```
+
+Test from the Mac Mini:
+```bash
+curl -s http://100.89.50.27:11434/api/tags | jq '.models[].name'
+```
+
+**2. `jq` must be installed on the Mac Mini:**
+```bash
+brew install jq
+```
+
+**3. `jenkins-admin-creds` credential must exist in Jenkins:**
+
+```
+Manage Jenkins → Credentials → Global → Add Credential
+  Kind:     Username with password
+  ID:       jenkins-admin-creds
+  Username: admin
+  Password: <jenkins admin password>
+```
+
+This credential lets the Mac Mini agent fetch the console log from Jenkins
+via `${BUILD_URL}consoleText` — the REST API approach is sandbox-safe
+(no `currentBuild.rawBuild` needed).
+
+### What the LLM report looks like
+
+```markdown
+# Jenkins Build Failure Analysis
+
+## Build Metadata
+| Field | Value |
+|---|---|
+| Job | BankNow-iOS-Enterprise |
+| Build # | 42 |
+| Failed Stage | Archive |
+
+---
+
+## Analysis: qwen2.5-coder:latest (http://100.89.50.27:11434)
+
+## Root Cause
+The xcodebuild archive failed because the signing identity
+"iPhone Distribution: YourBank Ltd (DUMTEAM01)" was not found in the
+build keychain — the generate-dummy-signing.sh script was not run
+before the pipeline was triggered.
+
+## Likely Fix
+1. Run `./generate-dummy-signing.sh` → option 1 on the mobileapp agent.
+2. Verify with option 2 (Verify existing setup).
+3. Re-trigger the Jenkins build with DUMMY_SIGNING=true.
+
+## Preventive Measure
+Add a pre-flight `sh 'security find-identity -v ...'` step before
+the Archive stage to fail fast with a clear message rather than
+failing deep inside xcodebuild.
+
+## Confidence
+High — the error pattern "no identity found" is unambiguous.
+
+## Failure Flow
+```mermaid
+flowchart TD
+    A[Build triggered] --> B[Setup Signing]
+    B --> C[Archive stage]
+    C --> D{codesign lookup}
+    D -->|identity not found| E[xcodebuild error]
+    E --> F[Build FAILED]
+```
+
+## References
+- Apple TN3125: codesign identity lookup
+- https://developer.apple.com/documentation/xcode/notarizing_macos_software_before_distribution
+```
+
+### Disabling LLM analysis
+
+If the Ollama endpoints are unavailable, the analysis is skipped gracefully.
+The email is still sent with the failure details — the LLM section shows
+a "not available" message instead of the report. No build step fails
+because of a missing LLM response.
+
+---
+
+## SMTP / Email Configuration
+
+Email is sent via the **Extended Email Publisher (emailext)** plugin,
+which uses a stored Jenkins credential for Brevo SMTP authentication.
+
+### Current SMTP settings
+
+| Setting | Value |
+|---------|-------|
+| Server | `smtp-relay.brevo.com` |
+| Port | `587` (STARTTLS) |
+| Auth | Jenkins credential `174fdee7-bf47...` (Username/Password) |
+| From | `a98477001@smtp-brevo.com` |
+
+### Known issue — Mailer plugin auth is broken
+
+The basic Mailer plugin (`E-mail Notification` in post-build steps) has
+`smtpAuthUserName = null`. It will fail with `502 5.7.0 Please authenticate first`.
+
+**Fix:** Manage Jenkins → Configure System → E-mail Notification:
+- SMTP server: `smtp-relay.brevo.com`
+- Advanced → check "Use SMTP Authentication"
+- User Name: `a98477001@smtp-brevo.com`
+- Password: `<Brevo SMTP API key>`
+- Check "Use TLS"
+- SMTP port: `587`
+
+The **emailext plugin** works correctly — use `emailext()` in pipelines
+(not the basic `mail()` step).
+
+---
+
 ## Troubleshooting
 
 ### `errSecInternalComponent` during codesign on Tahoe

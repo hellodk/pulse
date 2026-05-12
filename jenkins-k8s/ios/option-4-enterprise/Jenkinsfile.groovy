@@ -534,29 +534,167 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
             }
         }
 
+        // ── Failure: LLM analysis + email ────────────────────────────────────
+        // LLM analysis flow (all sandbox-safe — no rawBuild):
+        //   1. checkout scm in the node block to get llm-analysis.sh
+        //   2. Fetch console log via Jenkins REST API (curl sh step)
+        //   3. Extract iOS error patterns with grep
+        //   4. Run jenkins-k8s/shared/llm-analysis.sh (queries Ollama endpoints
+        //      at 100.89.50.27:11434 and 100.104.14.62:21434 via Tailscale)
+        //   5. readFile('llm-analysis.md') — whitelisted Jenkins step
+        //   6. Archive llm-analysis.md as a build artifact
+        //   7. Send failure email with LLM report embedded
+        //
+        // Requires Jenkins credential: jenkins-admin-creds (Username/Password)
+        //   Manage Jenkins → Credentials → Global → Add
+        //   Kind: Username/Password
+        //   ID:   jenkins-admin-creds
+        //   User: admin   Password: <jenkins admin password>
+        //
+        // Requires Ollama reachable from the Mac Mini agent via Tailscale.
+        // Both endpoints are queried; best available model is selected automatically.
         failure {
             script {
                 echo "Build FAILED at stage: ${env.FAILED_STAGE ?: 'Unknown'}"
-                if (params.NOTIFY_EMAIL?.trim()) {
-                    def duration = currentBuild.durationString ?: 'N/A'
-                    def mode     = params.DUMMY_SIGNING ? 'Dummy (self-signed)' : 'Enterprise (real)'
-                    emailext(
-                        subject: "&#10060; iOS BUILD FAILED: ${env.APP_NAME} ${env.ENVIRONMENT} #${env.BUILD_NUMBER}",
-                        mimeType: 'text/html',
-                        to: params.NOTIFY_EMAIL,
-                        body: """
+
+                node(params.AGENT) {
+                    def llmReport    = ''
+                    def llmAvailable = false
+
+                    try {
+                        // Get the analysis script from the repo
+                        checkout scm
+
+                        // 1. Fetch full console log via Jenkins REST API
+                        //    curl is sandbox-safe (it's a sh step, not a Groovy API)
+                        withCredentials([usernamePassword(
+                            credentialsId: 'jenkins-admin-creds',
+                            usernameVariable: 'JENKINS_USER',
+                            passwordVariable: 'JENKINS_PASS'
+                        )]) {
+                            sh """#!/bin/bash
+                            set -euo pipefail
+                            export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+
+                            echo "Fetching console log from Jenkins REST API..."
+                            curl -sf --max-time 30 \\
+                                --user "\${JENKINS_USER}:\${JENKINS_PASS}" \\
+                                "${env.BUILD_URL}consoleText" \\
+                                | tail -200 > build-log-tail.txt \\
+                                || echo "Log fetch failed — ensure jenkins-admin-creds is configured." > build-log-tail.txt
+
+                            # iOS-specific error extraction: codesign, xcodebuild, pod, pnpm/Metro
+                            grep -iE \\
+                                "error:|Error:|FAILED|errSec|errAuth|codesign failed|code sign|\\
+                                 xcodebuild.*error|Build input file cannot be found|\\
+                                 pod.*error|pod install failed|\\
+                                 cannot find module|Metro bundler|\\
+                                 npm ERR|pnpm ERR|node_modules|\\
+                                 provisioning profile|certificate|keychain|\\
+                                 BUILD_FAILED|CompileError|LinkerError" \\
+                                build-log-tail.txt | head -40 > build-error-snippet.txt || true
+
+                            echo "Log lines    : \$(wc -l < build-log-tail.txt | tr -d ' ')"
+                            echo "Error lines  : \$(wc -l < build-error-snippet.txt | tr -d ' ')"
+                            """
+                        }
+
+                        // 2. Run LLM analysis with iOS-specific context
+                        sh """#!/bin/bash
+                        set -euo pipefail
+                        export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+
+                        # Core context variables consumed by llm-analysis.sh
+                        export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+                        export ERROR_SNIPPET="\$(cat build-error-snippet.txt 2>/dev/null || echo 'Not extracted')"
+                        export LOG_TAIL="\$(cat build-log-tail.txt 2>/dev/null || echo 'Not available')"
+                        export BUILD_NUMBER="${env.BUILD_NUMBER}"
+                        export JOB_NAME="${env.JOB_NAME}"
+
+                        # Additional context variables for the enhanced prompt
+                        export BUILD_TYPE="iOS-Enterprise"
+                        export APP_NAME="${env.APP_NAME}"
+                        export ENVIRONMENT="${params.ENVIRONMENT}"
+                        export EXTRA_CONTEXT="Signing mode: ${params.DUMMY_SIGNING ? 'dummy self-signed (no Apple account)' : 'real enterprise certificate'}.
+macOS Tahoe (26) — known codesign issues:
+  - errSecInternalComponent: missing set-key-partition-list on keychain
+  - errSecInteractionNotAllowed: keychain locked under launchd agent
+  - Provisioning profile must be CMS-signed by Apple for device install
+React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages.
+CocoaPods for iOS dependency management.
+xcodebuild archive then manual Payload/ IPA packaging (DUMMY_SIGNING=${params.DUMMY_SIGNING})."
+
+                        chmod +x jenkins-k8s/shared/llm-analysis.sh
+                        bash jenkins-k8s/shared/llm-analysis.sh
+
+                        echo "LLM analysis written to: llm-analysis.md"
+                        """
+
+                        // 3. Archive the report as a build artifact
+                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+
+                        // 4. Read the report — readFile() is sandbox-safe (whitelisted Jenkins step)
+                        //    This is the correct alternative to currentBuild.rawBuild.getLog()
+                        if (fileExists('llm-analysis.md')) {
+                            llmReport    = readFile('llm-analysis.md')
+                            llmAvailable = true
+                            echo "LLM analysis loaded: ${llmReport.size()} characters"
+                        }
+
+                    } catch (llmErr) {
+                        echo "LLM analysis skipped: ${llmErr.message}"
+                        llmReport = "LLM analysis could not run: ${llmErr.message}\n\n" +
+                                    "Check:\n" +
+                                    "• jenkins-admin-creds credential exists in Jenkins\n" +
+                                    "• Ollama endpoints reachable via Tailscale (100.89.50.27:11434, 100.104.14.62:21434)\n" +
+                                    "• jq is installed on the Mac Mini agent (brew install jq)"
+                    }
+
+                    // 5. Send failure email with LLM report embedded
+                    if (params.NOTIFY_EMAIL?.trim()) {
+                        def duration   = currentBuild.durationString ?: 'N/A'
+                        def mode       = params.DUMMY_SIGNING ? 'Dummy (self-signed)' : 'Enterprise (real)'
+                        def llmSection = llmAvailable
+                            ? """
+  <h3 style="border-bottom:2px solid #cc0000;padding-bottom:6px;margin-top:24px;">
+    &#129302; LLM Failure Analysis
+    <span style="font-size:11px;font-weight:normal;color:#666;">
+      (via Ollama — Tailscale endpoints)
+    </span>
+  </h3>
+  <div style="background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:6px;
+              font-family:monospace;font-size:12px;white-space:pre-wrap;
+              word-break:break-all;max-height:600px;overflow-y:auto;">
+${llmReport.take(8000)}${llmReport.size() > 8000 ? '\n\n... (truncated — see llm-analysis.md artifact for full report)' : ''}
+  </div>
+  <p style="font-size:12px;color:#666;margin-top:8px;">
+    Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">Download llm-analysis.md</a>
+  </p>"""
+                            : """
+  <h3 style="border-bottom:1px solid #ccc;padding-bottom:6px;margin-top:24px;">
+    &#129302; LLM Failure Analysis
+  </h3>
+  <p style="color:#666;">${llmReport}</p>"""
+
+                        emailext(
+                            subject: "&#10060; iOS BUILD FAILED: ${env.APP_NAME} ${params.ENVIRONMENT} #${env.BUILD_NUMBER}",
+                            mimeType: 'text/html',
+                            to: params.NOTIFY_EMAIL,
+                            attachmentsPattern: 'llm-analysis.md',
+                            body: """
 <html>
 <body style="font-family:Arial,sans-serif;font-size:14px;color:#333;">
   <h2 style="color:#cc0000;">&#10060; iOS Build Failed</h2>
 
   <table border="1" cellpadding="8" cellspacing="0"
-         style="border-collapse:collapse;width:100%;max-width:700px;">
+         style="border-collapse:collapse;width:100%;max-width:720px;">
     <tr style="background:#f7f7f7;"><td width="200"><b>App</b></td>          <td>${env.APP_NAME}</td></tr>
     <tr>                            <td><b>Environment</b></td>              <td>${params.ENVIRONMENT}</td></tr>
     <tr style="background:#f7f7f7;"><td><b>Build #</b></td>                  <td>${env.BUILD_NUMBER}</td></tr>
     <tr>                            <td><b>Duration</b></td>                 <td>${duration}</td></tr>
     <tr style="background:#f7f7f7;"><td><b>Agent</b></td>                    <td>${params.AGENT}</td></tr>
     <tr>                            <td><b>Signing Mode</b></td>             <td>${mode}</td></tr>
+    <tr style="background:#f7f7f7;"><td><b>Package Manager</b></td>          <td>${params.USE_PNPM ? 'pnpm' : 'npm'}</td></tr>
     <tr style="background:#fee;">
       <td><b>Failed Stage</b></td>
       <td><b style="color:#cc0000;">${env.FAILED_STAGE ?: 'Unknown'}</b></td>
@@ -566,16 +704,24 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
       <td><a href="${env.BUILD_URL}console">View full console</a></td>
     </tr>
     <tr style="background:#f7f7f7;">
+      <td><b>Artifacts</b></td>
+      <td><a href="${env.BUILD_URL}artifact">Browse artifacts (llm-analysis.md)</a></td>
+    </tr>
+    <tr>
       <td><b>Build URL</b></td>
       <td><a href="${env.BUILD_URL}">${env.BUILD_URL}</a></td>
     </tr>
   </table>
+
+  ${llmSection}
+
   <br/>
   <p>Regards,<br/><b>Jenkins CI</b></p>
 </body>
 </html>
-                        """
-                    )
+                            """
+                        )
+                    }
                 }
             }
         }
