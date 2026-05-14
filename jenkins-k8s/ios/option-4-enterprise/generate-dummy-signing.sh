@@ -285,6 +285,25 @@ EOF
         "${KEYCHAIN_NAME}"
     ok "Keychain '${KEYCHAIN_NAME}' ready with Tahoe partition fix applied."
 
+    # ── Trust the CA so security find-identity -v shows a VALID identity ─────
+    # security find-identity -v only lists certs whose full chain is trusted.
+    # Our self-signed CA is unknown to macOS by default, so without trusting it
+    # the cert appears in the keychain but shows "0 valid identities found".
+    # Adding the CA to the System keychain trust store fixes this.
+    # Requires sudo — the Mac Mini agent must have passwordless sudo configured.
+    log "Trusting CA in System keychain (requires sudo)..."
+    if sudo security add-trusted-cert \
+            -d -r trustRoot \
+            -k /Library/Keychains/System.keychain \
+            "${OUTPUT_DIR}/ca.crt" 2>/dev/null; then
+        ok "CA trusted in System keychain — 'security find-identity -v' will now show valid identity."
+    else
+        warn "Could not add CA to System keychain (sudo may have prompted or been denied)."
+        warn "Run manually: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain dummy-signing/ca.crt"
+        warn "Without this, 'security find-identity -v' shows 0 valid identities — but codesign"
+        warn "may still work if you pass the keychain explicitly with --keychain flag."
+    fi
+
     # ── Fake provisioning profile ─────────────────────────────────────────────
     section "Step 5 — Fake Enterprise Provisioning Profile"
     # Correct CMS structure — passes security cms -D and plutil checks.
@@ -534,10 +553,23 @@ do_verify() {
     check_item "signing-env.sh metadata" \
         "$(ls "${OUTPUT_DIR}/signing-env.sh" 2>/dev/null)"
 
+    # Check for the identity — use -a (all) not -v (valid only) so the check
+    # passes even before the CA is added to the system trust store.
+    # A separate line reports whether it is fully trusted (-v).
     local identity
-    identity=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+    identity=$(security find-identity -a -p codesigning "${KEYCHAIN_NAME}" \
                2>/dev/null | grep "iPhone Distribution" | head -1 || echo "")
     check_item "Signing identity in keychain (${KEYCHAIN_NAME})" "${identity}"
+
+    local valid_identity
+    valid_identity=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+                     2>/dev/null | grep "iPhone Distribution" | head -1 || echo "")
+    if [[ -n "${valid_identity}" ]]; then
+        echo -e "  ${GREEN}✓${NC}  CA trusted by macOS — identity is valid for codesigning"
+        pass=$((pass+1))
+    else
+        echo -e "  ${YELLOW}!${NC}  CA not yet trusted — run: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain dummy-signing/ca.crt"
+    fi
 
     local profile_installed
     profile_installed=$(ls "${HOME}/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision \
