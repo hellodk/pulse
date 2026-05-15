@@ -62,7 +62,7 @@ spec:
         - name: email-templates
           mountPath: /var/jenkins_home/email-templates
         - name: git-repo
-          mountPath: /home/dk/Documents/git/testing-grounds
+          mountPath: /home/dk/Documents/git/pulse
           readOnly: true
         resources:
           requests:
@@ -95,7 +95,7 @@ spec:
           name: jenkins-email-templates
       - name: git-repo
         hostPath:
-          path: /home/dk/Documents/git/testing-grounds
+          path: /home/dk/Documents/git/pulse
           type: Directory
 ---
 apiVersion: v1
