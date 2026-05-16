@@ -24,8 +24,8 @@ EXTRA_CONTEXT="${EXTRA_CONTEXT:-}"
 TIMESTAMP=$(TZ=Asia/Kolkata date +"%Y-%m-%d %H:%M:%S IST")
 
 # Endpoints can be overridden by pipeline parameters:
-#   LLM_ENDPOINT_A  — primary Ollama endpoint
-#   LLM_ENDPOINT_B  — secondary Ollama endpoint (cross-check)
+#   LLM_ENDPOINT_A  — primary Ollama endpoint (100.89.50.27:11434)
+#   LLM_ENDPOINT_B  — secondary llama.cpp endpoint (100.104.14.62:21434)
 #   LLM_MODEL_PRIORITY — space-separated model priority list
 ENDPOINT_A="${LLM_ENDPOINT_A:-http://100.89.50.27:11434}"
 ENDPOINT_B="${LLM_ENDPOINT_B:-http://100.104.14.62:21434}"

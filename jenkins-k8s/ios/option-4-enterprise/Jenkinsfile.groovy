@@ -91,7 +91,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
         string(name: 'LLM_ENDPOINT_B',
                defaultValue: 'http://100.104.14.62:21434',
-               description: 'Secondary Ollama endpoint for LLM cross-check')
+               description: 'Secondary llama.cpp endpoint for LLM cross-check')
     }
 
     options {
@@ -549,13 +549,13 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
         // ── Failure: LLM analysis + email ────────────────────────────────────
         // LLM analysis flow (all sandbox-safe — no rawBuild):
-        //   1. checkout scm in the node block to get llm-analysis.sh
-        //   2. Fetch console log via Jenkins REST API (curl sh step)
-        //   3. Extract iOS error patterns with grep
-        //   4. Run jenkins-k8s/shared/llm-analysis.sh (queries Ollama endpoints
+        //   1. Universal PULSE_DIR resolver finds llm-analysis.sh on any agent type
+        //      (Mac Mini: ~/Documents/git/pulse, Linux: /home/dk/Documents/git/pulse)
+        //   2. extract-build-errors.sh distils xcodebuild output to ≤200 lines
+        //   3. Run jenkins-k8s/shared/llm-analysis.sh (queries Ollama endpoints
         //      at 100.89.50.27:11434 and 100.104.14.62:21434 via Tailscale)
-        //   5. readFile('llm-analysis.md') — whitelisted Jenkins step
-        //   6. Archive llm-analysis.md as a build artifact
+        //   4. readFile('llm-analysis.md') — whitelisted Jenkins step
+        //   5. Archive llm-analysis.md as a build artifact
         //   7. Send failure email with LLM report embedded
         //
         // Requires Jenkins credential: jenkins-admin-creds (Username/Password)
@@ -575,39 +575,41 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     def llmAvailable = false
 
                     try {
-                        // Get the analysis scripts from the repo.
-                        // The workspace may be empty if failure was very early;
-                        // checkout here ensures the scripts are always available.
-                        checkout scm
-
                         // ── Smart log extraction ──────────────────────────────
-                        // xcodebuild generates 100k+ raw lines.  extract-build-errors.sh
-                        // distils this to ≤200 lines of actual errors:
-                        //   Priority 1 — xcodebuild-errors.log (xcpretty output, saved
-                        //                during Archive stage via tee) — already filtered
-                        //                to errors/warnings, typically 50-500 lines.
-                        //   Priority 2 — smart grep-based extraction from raw log
-                        //                (BUILD FAILED context, compiler errors, codesign,
-                        //                pod, Metro) — never sends raw compile noise.
-                        // No Jenkins REST API call or jenkins-admin-creds needed.
-                        sh """#!/bin/bash
+                        // Universal PULSE_DIR resolver — works on Mac Mini agents
+                        // (~/Documents/git/pulse) and Linux agents (/home/dk/Documents/git/pulse)
+                        // without needing checkout scm.
+                        sh """#!/bin/bash -l
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+
+                        PULSE_DIR=""
+                        for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                            [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
+                        done
+                        [ -z "\$PULSE_DIR" ] && echo "LLM scripts not found on this agent — skipping analysis" && exit 1
+                        echo "PULSE_DIR=\$PULSE_DIR"
+
                         export WORKSPACE="\${WORKSPACE}"
                         export MAX_LINES=200
                         export MAX_LINE_LEN=300
 
-                        chmod +x jenkins-k8s/shared/extract-build-errors.sh
-                        bash jenkins-k8s/shared/extract-build-errors.sh > build-error-report.txt 2>/dev/null || true
+                        bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
 
                         REPORT_LINES=\$(wc -l < build-error-report.txt | tr -d ' ')
                         echo "Error report: \${REPORT_LINES} lines (sent to LLM)"
                         """
 
                         // 2. Run LLM analysis with the concise error report
-                        sh """#!/bin/bash
+                        sh """#!/bin/bash -l
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+
+                        PULSE_DIR=""
+                        for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                            [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
+                        done
+                        [ -z "\$PULSE_DIR" ] && echo "PULSE_DIR not found — skipping LLM analysis" && exit 1
 
                         export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
                         export BUILD_NUMBER="${env.BUILD_NUMBER}"
@@ -635,8 +637,7 @@ CocoaPods for iOS dependency management.
 Archive stage pipes through tee + xcpretty; raw log saved to build/xcodebuild-raw.log.
 DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, not -exportArchive."
 
-                        chmod +x jenkins-k8s/shared/llm-analysis.sh
-                        bash jenkins-k8s/shared/llm-analysis.sh
+                        bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
                         echo "LLM analysis complete → llm-analysis.md"
                         """
 

@@ -10,7 +10,7 @@ pipeline {
                description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
         string(name: 'LLM_ENDPOINT_B',
                defaultValue: 'http://100.104.14.62:21434',
-               description: 'Secondary Ollama endpoint for LLM cross-check')
+               description: 'Secondary llama.cpp endpoint for LLM cross-check')
     }
 
     environment {

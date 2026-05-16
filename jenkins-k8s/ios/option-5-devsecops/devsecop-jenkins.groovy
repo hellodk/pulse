@@ -61,7 +61,7 @@ pipeline {
                description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
         string(name: 'LLM_ENDPOINT_B',
                defaultValue: 'http://100.104.14.62:21434',
-               description: 'Secondary Ollama endpoint for LLM cross-check')
+               description: 'Secondary llama.cpp endpoint for LLM cross-check')
     }
 
     environment {
@@ -649,11 +649,17 @@ tr:nth-child(odd) td{background:#fafbfc;}
                 node('cylon-agent') {
                     def llmReport = 'LLM analysis not available.'
                     try {
-                        checkout scm
                         sh """#!/bin/bash
 set -euo pipefail
-chmod +x jenkins-k8s/shared/extract-build-errors.sh jenkins-k8s/shared/llm-analysis.sh
-bash jenkins-k8s/shared/extract-build-errors.sh > build-error-report.txt 2>/dev/null || true
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+
+PULSE_DIR=""
+for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+    [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
+done
+[ -z "\$PULSE_DIR" ] && echo "LLM scripts not found on this agent — skipping analysis" && exit 1
+
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
 export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
 export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
 export LOG_TAIL="\${ERROR_SNIPPET}"
@@ -662,7 +668,7 @@ export JOB_NAME="${env.JOB_NAME}"
 export BUILD_TYPE="DevSecOps-K8s"
 export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
 export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-bash jenkins-k8s/shared/llm-analysis.sh
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
 """
                         archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
                         if (fileExists('llm-analysis.md')) { llmReport = readFile('llm-analysis.md') }
