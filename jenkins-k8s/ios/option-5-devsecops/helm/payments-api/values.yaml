@@ -1,0 +1,8 @@
+replicaCount: 1
+image:
+  repository: registry.company.io/payments-api
+  pullPolicy: IfNotPresent
+  tag: ""
+service:
+  type: ClusterIP
+  port: 8080
