@@ -2,6 +2,18 @@ pipeline {
     agent { label 'ios-agent' }
     options { skipDefaultCheckout(true) }
 
+    parameters {
+        string(name: 'NOTIFY_EMAIL',
+               defaultValue: 'reject@hellodk.io',
+               description: 'Recipient email(s) — comma-separated. Leave blank to skip.')
+        string(name: 'LLM_ENDPOINT_A',
+               defaultValue: 'http://100.89.50.27:11434',
+               description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
+        string(name: 'LLM_ENDPOINT_B',
+               defaultValue: 'http://100.104.14.62:21434',
+               description: 'Secondary Ollama endpoint for LLM cross-check')
+    }
+
     environment {
         NEXUS_CREDS                  = credentials('nexus-creds')
         JFROG_CREDS                  = credentials('jfrog-creds')
@@ -14,17 +26,26 @@ pipeline {
             steps {
                 git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         stage('Bundle Install') {
             steps {
                 sh 'bundle config set --local path vendor/bundle && bundle install --jobs 4 --retry 3'
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         stage('Resolve Dependencies') {
             steps {
                 sh 'bundle exec fastlane resolve_deps'
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -41,6 +62,7 @@ pipeline {
                         reportName: 'Test Results'
                     ])
                 }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -52,6 +74,7 @@ pipeline {
                 always {
                     archiveArtifacts artifacts: 'build/*.ipa', allowEmptyArchive: true
                 }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -67,6 +90,7 @@ pipeline {
                         reportName: 'SwiftLint'
                     ])
                 }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -82,26 +106,150 @@ pipeline {
                     sh 'bundle exec fastlane upload_jfrog'
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
     }
 
     post {
         failure {
-            emailext(
-                subject: "[iOS-Fastlane FAILURE] ${JOB_NAME} #${BUILD_NUMBER}",
-                to: 'reject@hellodk.io',
-                mimeType: 'text/html',
-                body: '${SCRIPT, template="failure-email.groovy"}'
-            )
+            script {
+                def llmReport = 'LLM analysis not available — check Ollama endpoint connectivity.'
+                try {
+                    checkout scm
+                    sh """#!/bin/bash -l
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+chmod +x jenkins-k8s/shared/extract-build-errors.sh \
+          jenkins-k8s/shared/llm-analysis.sh
+
+bash jenkins-k8s/shared/extract-build-errors.sh \
+    > build-error-report.txt 2>/dev/null || true
+
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="iOS-Fastlane"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash jenkins-k8s/shared/llm-analysis.sh
+"""
+                    archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                    if (fileExists('llm-analysis.md')) {
+                        llmReport = readFile('llm-analysis.md')
+                    }
+                } catch (e) {
+                    llmReport = "LLM analysis failed: ${e.message}"
+                }
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    def duration  = currentBuild.durationString ?: 'N/A'
+                    def gitCommit = env.GIT_SHA ?: (env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : 'N/A')
+                    def llmTrunc  = llmReport.size() > 8000 ? llmReport.take(8000) + '\n\n...(truncated, see llm-analysis.md artifact)' : llmReport
+                    emailext(
+                        subject: "❌ iOS Fastlane FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        mimeType: 'text/html',
+                        to: params.NOTIFY_EMAIL,
+                        attachmentsPattern: 'llm-analysis.md',
+                        body: """
+<html><head><style>
+  body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+  .wrap{max-width:760px;margin:0 auto;}
+  .hdr{background:linear-gradient(135deg,#c0392b,#96281b);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+  .hdr h1{margin:0;font-size:20px;} .hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+  .body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}
+  tr:nth-child(odd) td{background:#fafbfc;}
+  .lbl{font-weight:600;color:#555;width:160px;}
+  .fail td{background:#fff5f5!important;color:#c0392b;font-weight:700;}
+  .sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+  .llm{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:500px;overflow-y:auto;}
+  .btns{margin-top:16px;} .btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+  .b1{background:#0078d4;color:#fff;} .b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+  .ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+  <div class="hdr">
+    <h1>&#10060; iOS Build Failed</h1>
+    <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+  </div>
+  <div class="body">
+    <table>
+      <tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+      <tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+      <tr><td class="lbl">Agent</td><td>${env.NODE_NAME ?: 'ios-agent'}</td></tr>
+      <tr><td class="lbl">Git Commit</td><td><code>${gitCommit}</code></td></tr>
+      <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+      <tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+    </table>
+    <div class="btns">
+      <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+      <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+      <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+    </div>
+    <div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
+    <div class="llm">${llmTrunc}</div>
+    <p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
+  </div>
+  <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
         }
+
         success {
-            emailext(
-                subject: "[iOS-Fastlane SUCCESS] ${JOB_NAME} #${BUILD_NUMBER} — IPA ready",
-                to: 'reject@hellodk.io',
-                mimeType: 'text/html',
-                body: '${SCRIPT, template="success-email.groovy"}'
-            )
+            script {
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    def duration  = currentBuild.durationString ?: 'N/A'
+                    def gitCommit = env.GIT_SHA ?: (env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : 'N/A')
+                    emailext(
+                        subject: "✅ iOS Fastlane SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} — IPA ready",
+                        mimeType: 'text/html',
+                        to: params.NOTIFY_EMAIL,
+                        body: """
+<html><head><style>
+  body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+  .wrap{max-width:760px;margin:0 auto;}
+  .hdr{background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+  .hdr h1{margin:0;font-size:20px;} .hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+  .body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}
+  tr:nth-child(odd) td{background:#fafbfc;}
+  .lbl{font-weight:600;color:#555;width:160px;}
+  .btns{margin-top:16px;} .btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+  .b1{background:#27ae60;color:#fff;} .b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+  .ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+  <div class="hdr">
+    <h1>&#9989; iOS Build Successful</h1>
+    <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+  </div>
+  <div class="body">
+    <table>
+      <tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+      <tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+      <tr><td class="lbl">Agent</td><td>${env.NODE_NAME ?: 'ios-agent'}</td></tr>
+      <tr><td class="lbl">Git Commit</td><td><code>${gitCommit}</code></td></tr>
+      <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+    </table>
+    <div class="btns">
+      <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+      <a href="${env.BUILD_URL}artifact" class="btn b2">Download Artifacts</a>
+      <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+    </div>
+  </div>
+  <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
         }
+
         cleanup { deleteDir() }
     }
 }

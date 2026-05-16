@@ -13,6 +13,8 @@
  *  - Manual approval gate
  *  - Kubernetes deployment
  *  - HTML preview report published in Jenkins
+ *  - LLM failure analysis via Ollama (configurable endpoints)
+ *  - HTML email notifications with failed stage tracking
  *
  * Recommended Plugins:
  *  - Pipeline
@@ -48,6 +50,18 @@ pipeline {
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '30'))
         timeout(time: 90, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'NOTIFY_EMAIL',
+               defaultValue: 'reject@hellodk.io',
+               description: 'Recipient email(s) — comma-separated. Leave blank to skip.')
+        string(name: 'LLM_ENDPOINT_A',
+               defaultValue: 'http://100.89.50.27:11434',
+               description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
+        string(name: 'LLM_ENDPOINT_B',
+               defaultValue: 'http://100.104.14.62:21434',
+               description: 'Secondary Ollama endpoint for LLM cross-check')
     }
 
     environment {
@@ -101,6 +115,9 @@ pipeline {
                     mkdir -p ${PREVIEW_DIR}
                 '''
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -139,6 +156,9 @@ pipeline {
                       > ${PREVIEW_DIR}/changed-files.txt
                 '''
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -160,6 +180,9 @@ pipeline {
                           > ${PREVIEW_DIR}/helm-diff.txt || true
                     '''
                 }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -194,6 +217,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -219,6 +245,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -240,6 +269,9 @@ pipeline {
                             '''
                         }
                     }
+                    post {
+                        failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+                    }
                 }
 
                 stage('SonarQube') {
@@ -250,6 +282,9 @@ pipeline {
                                 sonar-scanner
                             '''
                         }
+                    }
+                    post {
+                        failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
                     }
                 }
             }
@@ -270,6 +305,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -287,6 +325,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -303,6 +344,9 @@ pipeline {
                         trivy image --exit-code 1 --severity CRITICAL,HIGH ${IMAGE_NAME}:${VERSION}
                     '''
                 }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -324,6 +368,9 @@ pipeline {
                         '''
                     }
                 }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
 
@@ -432,6 +479,9 @@ pipeline {
                     reportName           : 'Release Preview Dashboard'
                 ])
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -461,6 +511,9 @@ pipeline {
                     )
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -487,6 +540,9 @@ pipeline {
                     }
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -507,6 +563,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
 
         /*
@@ -525,6 +584,9 @@ pipeline {
                     '''
                 }
             }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
         }
     }
 
@@ -541,13 +603,121 @@ pipeline {
         }
 
         success {
-
-            echo "Deployment successful."
+            script {
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    def duration = currentBuild.durationString ?: 'N/A'
+                    emailext(
+                        subject: "✅ DevSecOps PASSED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        mimeType: 'text/html',
+                        to: params.NOTIFY_EMAIL,
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}
+tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#27ae60;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#9989; DevSecOps Pipeline Passed</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+</table>
+<div class="btns">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+</div>
+</div>
+<div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
         }
 
         failure {
-
-            echo "Pipeline failed."
+            script {
+                node('cylon-agent') {
+                    def llmReport = 'LLM analysis not available.'
+                    try {
+                        checkout scm
+                        sh """#!/bin/bash
+set -euo pipefail
+chmod +x jenkins-k8s/shared/extract-build-errors.sh jenkins-k8s/shared/llm-analysis.sh
+bash jenkins-k8s/shared/extract-build-errors.sh > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="DevSecOps-K8s"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash jenkins-k8s/shared/llm-analysis.sh
+"""
+                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                        if (fileExists('llm-analysis.md')) { llmReport = readFile('llm-analysis.md') }
+                    } catch (e) {
+                        llmReport = "LLM analysis failed: ${e.message}"
+                    }
+                    if (params.NOTIFY_EMAIL?.trim()) {
+                        def duration = currentBuild.durationString ?: 'N/A'
+                        def llmTrunc = llmReport.size() > 8000 ? llmReport.take(8000) + '\n...(truncated)' : llmReport
+                        emailext(
+                            subject: "❌ DevSecOps FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            mimeType: 'text/html',
+                            to: params.NOTIFY_EMAIL,
+                            attachmentsPattern: 'llm-analysis.md',
+                            body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#c0392b,#96281b);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}
+tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.fail td{background:#fff5f5!important;color:#c0392b;font-weight:700;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.llm{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:500px;overflow-y:auto;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#0078d4;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#10060; DevSecOps Pipeline Failed</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+<tr><td class="lbl">Agent</td><td>cylon-agent</td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+<tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+</table>
+<div class="btns">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+<a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+</div>
+<div class="sec">&#129302; LLM Failure Analysis</div>
+<div class="llm">${llmTrunc}</div>
+</div>
+<div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                        )
+                    }
+                }
+            }
         }
     }
 }

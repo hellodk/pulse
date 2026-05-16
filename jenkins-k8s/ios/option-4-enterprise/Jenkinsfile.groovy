@@ -82,10 +82,16 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                      defaultValue: false,
                      description: 'Clean DerivedData before archive (slower, fixes stale build issues)')
 
-        // Notifications
+        // Notifications & LLM
         string(name:        'NOTIFY_EMAIL',
-               defaultValue: '',
+               defaultValue: 'reject@hellodk.io',
                description:  'Email for build result notification — comma-separated. Leave blank to skip.')
+        string(name: 'LLM_ENDPOINT_A',
+               defaultValue: 'http://100.89.50.27:11434',
+               description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
+        string(name: 'LLM_ENDPOINT_B',
+               defaultValue: 'http://100.104.14.62:21434',
+               description: 'Secondary Ollama endpoint for LLM cross-check')
     }
 
     options {
@@ -614,6 +620,10 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         # LOG_TAIL: kept for compatibility but set to same content
                         export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Extraction failed')"
                         export LOG_TAIL="\${ERROR_SNIPPET}"
+
+                        # Configurable endpoints — overridden by pipeline parameters
+                        export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+                        export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
 
                         export EXTRA_CONTEXT="Signing mode: ${params.DUMMY_SIGNING ? 'dummy self-signed (no Apple account)' : 'real enterprise certificate'}.
 macOS Tahoe (26) — known codesign issues:

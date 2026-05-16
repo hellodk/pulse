@@ -21,14 +21,19 @@ BUILD_TYPE="${BUILD_TYPE:-}"
 APP_NAME="${APP_NAME:-}"
 ENVIRONMENT="${ENVIRONMENT:-}"
 EXTRA_CONTEXT="${EXTRA_CONTEXT:-}"
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TIMESTAMP=$(TZ=Asia/Kolkata date +"%Y-%m-%d %H:%M:%S IST")
 
-ENDPOINT_A="http://100.89.50.27:11434"
-ENDPOINT_B="http://100.104.14.62:21434"
-TIMEOUT=120
+# Endpoints can be overridden by pipeline parameters:
+#   LLM_ENDPOINT_A  — primary Ollama endpoint
+#   LLM_ENDPOINT_B  — secondary Ollama endpoint (cross-check)
+#   LLM_MODEL_PRIORITY — space-separated model priority list
+ENDPOINT_A="${LLM_ENDPOINT_A:-http://100.89.50.27:11434}"
+ENDPOINT_B="${LLM_ENDPOINT_B:-http://100.104.14.62:21434}"
+TIMEOUT="${LLM_TIMEOUT:-120}"
 
 # Priority order for model selection (most capable first)
-MODEL_PRIORITY="qwen2.5-coder qwen2.5 deepseek-coder codellama llama3 llama2 mistral phi"
+# Override via LLM_MODEL_PRIORITY env var
+MODEL_PRIORITY="${LLM_MODEL_PRIORITY:-qwen2.5-coder qwen2.5 deepseek-coder codellama llama3 llama2 mistral phi}"
 
 # Build optional context header
 CONTEXT_HEADER=""
