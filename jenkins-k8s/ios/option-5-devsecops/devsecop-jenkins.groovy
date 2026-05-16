@@ -37,9 +37,10 @@
 pipeline {
 
     agent {
-        // Use android-agent (k8s pod) — has kubectl, helm, docker available
-        // Switch to 'mobileapp-m3' for Mac Mini or 'ios-agent' for mm1
-        label 'android-agent'
+        // cylon-agent: Jenkins JNLP agent running directly on the k8s host.
+        // Has helm, kubectl, docker, gitleaks, jq available natively.
+        // Label 'k8s-devsecops-agent' also accepted (original blueprint label).
+        label 'cylon-agent'
     }
 
     options {
@@ -149,7 +150,6 @@ pipeline {
         stage('Helm Diff Preview') {
 
             steps {
-
                 sh '''
                     echo "Generating Helm diff..."
 

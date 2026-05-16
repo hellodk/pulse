@@ -1,0 +1,39 @@
+[Unit]
+Description=Jenkins JNLP Agent — cylon (devsecops)
+Documentation=https://www.jenkins.io/doc/book/using/using-agents/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dk
+WorkingDirectory=/home/dk/jenkins-agent-cylon
+
+# Agent connection
+ExecStart=/usr/bin/java \
+    -jar /home/dk/jenkins-agent-cylon/agent.jar \
+    -url http://192.168.1.10:30881/ \
+    -secret c2934a662484200c9b220e0ee976e36e571fd8963c10082e0910e3d6b7c7d765 \
+    -name cylon-agent \
+    -webSocket \
+    -workDir /home/dk/jenkins-agent-cylon
+
+# Restart on failure with backoff
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Logging
+StandardOutput=append:/home/dk/jenkins-agent-cylon/agent.log
+StandardError=append:/home/dk/jenkins-agent-cylon/agent.log
+
+# Environment — expose all tools available on cylon
+Environment="HOME=/home/dk"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
+Environment="KUBECONFIG=/home/dk/.kube/config"
+Environment="TZ=Asia/Kolkata"
+
+[Install]
+WantedBy=multi-user.target
