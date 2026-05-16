@@ -19,7 +19,7 @@
       <configVersion>2</configVersion>
       <userRemoteConfigs>
         <hudson.plugins.git.UserRemoteConfig>
-          <url>file:///home/dk/Documents/git/testing-grounds</url>
+          <url>file:///home/dk/Documents/git/pulse</url>
         </hudson.plugins.git.UserRemoteConfig>
       </userRemoteConfigs>
       <branches>
