@@ -7,6 +7,43 @@ Tested on: **macOS Tahoe 26, Mac Mini M3 16 GB RAM**
 
 ---
 
+## Two Provisioning Approaches
+
+We have two Mac Mini agents. The setup approach differs:
+
+| | **mm1 (M2 — ios-agent)** | **mobileapp-m3 (M3)** |
+|---|---|---|
+| Label | `ios-agent` | `mobileapp-m3` |
+| Provisioned by | Ansible playbook | Manual (this guide) |
+| Plist location | `~/Library/LaunchAgents/` (user-level) | `/Library/LaunchDaemons/` (system-level) |
+| Plist name | `com.jenkins.ios-agent.plist` | `io.jenkins.agent.plist` |
+| Connects via | Tailscale | Local network |
+| Ruby version | 3.2.2 | 3.4.5 |
+| Load command | `launchctl load` (deprecated) | `launchctl bootstrap system` |
+| Survives reboot | Yes (if user auto-login enabled) | Yes (system daemon, no login required) |
+
+### Option A — Ansible (recommended for future agents)
+
+The Ansible playbook `ansible/setup-ios-agent.yml` automates the full
+setup. Run it from the k0s host:
+
+```bash
+cd /home/dk/Documents/git/pulse/ansible
+ansible-playbook -i inventory.ini setup-ios-agent.yml
+```
+
+The playbook installs Homebrew, Java, rbenv, Ruby, CocoaPods, xcpretty,
+nvm, Node, downloads the agent jar, and writes the launchd plist.
+
+To add a new Mac Mini to the Ansible inventory, edit `ansible/inventory.ini`
+and add the host under the `[mac_minis]` group.
+
+### Option B — Manual (this guide)
+
+Follow the steps below when Ansible is not available or for one-off setups.
+
+---
+
 ## Hardware & OS Requirements
 
 | Item | Minimum | Recommended |
@@ -471,9 +508,13 @@ ps -ef | grep agent.jar | grep -v grep
 # Check log
 tail -50 /Users/dk/jenkins-agent/agent.log
 
-# Restart manually
+# Restart — mobileapp-m3 (system daemon, /Library/LaunchDaemons)
 sudo launchctl bootout system /Library/LaunchDaemons/io.jenkins.agent.plist
 sudo launchctl bootstrap system /Library/LaunchDaemons/io.jenkins.agent.plist
+
+# Restart — mm1 ios-agent (user agent, ~/Library/LaunchAgents)
+launchctl unload ~/Library/LaunchAgents/com.jenkins.ios-agent.plist
+launchctl load  ~/Library/LaunchAgents/com.jenkins.ios-agent.plist
 ```
 
 ### `Bootstrap failed: 5: Input/output error` on macOS Tahoe

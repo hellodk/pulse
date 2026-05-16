@@ -1,6 +1,11 @@
 # iOS Pipelines on Jenkins
 
-Three pipeline options that build iOS apps on a Mac Mini M2 registered as a static JNLP agent (`ios-agent`).
+Three pipeline options that build iOS apps on Mac Mini agents registered as static JNLP agents.
+
+| Agent | Label | Hardware | Provisioned by |
+|---|---|---|---|
+| mm1 | `ios-agent` | Mac Mini M2 | Ansible (`ansible/setup-ios-agent.yml`) |
+| mobileapp-m3 | `mobileapp-m3` | Mac Mini M3 16 GB | Manual (see `docs/mac-mini-setup.md`) |
 
 ---
 
@@ -49,7 +54,7 @@ RBENV_ROOT = ~/.rbenv
 **All three iOS jobs use `CpsScmFlowDefinition`** — the Jenkinsfile is read from git, not stored inline.
 
 ```
-Jenkins controller (k8s pod) → reads Jenkinsfile from file:///home/dk/Documents/git/testing-grounds
+Jenkins controller (k8s pod) → reads Jenkinsfile from file:///home/dk/Documents/git/pulse
 ↓
 Pipeline script loaded
 ↓
@@ -60,13 +65,13 @@ Pipeline runs on ios-agent (Mac Mini)
 
 **Why `skipDefaultCheckout(true)`?** All three Jenkinsfiles declare `options { skipDefaultCheckout(true) }`.
 
-Without it, Declarative Pipeline automatically checks out `file:///home/dk/Documents/git/testing-grounds` at the start of every build — on the ios-agent. But that path only exists in the k8s pod (mounted volume). The Mac Mini can't access it. `skipDefaultCheckout(true)` skips this implicit checkout; the pipeline then does its own explicit checkout of the app repo (`FoodTruck`, `mattermost-mobile`).
+Without it, Declarative Pipeline automatically checks out `file:///home/dk/Documents/git/pulse` at the start of every build — on the ios-agent. But that path only exists in the k8s pod (mounted volume). The Mac Mini can't access it. `skipDefaultCheckout(true)` skips this implicit checkout; the pipeline then does its own explicit checkout of the app repo (`FoodTruck`, `mattermost-mobile`).
 
-**The path `file:///home/dk/Documents/git/testing-grounds`:**
+**The path `file:///home/dk/Documents/git/pulse`:**
 - Accessible from the Jenkins controller pod (mounted as a volume)
 - NOT accessible from the Mac Mini (Linux path, different machine)
 
-The Mac Mini also has a clone of the repo at `~/Documents/git/testing-grounds` for reference, but it's not used in the build.
+The Mac Mini also has a clone of the repo at `~/Documents/git/pulse` for reference, but it's not used in the build.
 
 ---
 
@@ -147,7 +152,7 @@ Checkout (mattermost-mobile) → Validate → JS Dependencies (npm ci)
 
 ### Build jumps straight to Post Actions (no stages run)
 
-**Cause:** If `skipDefaultCheckout(true)` is missing, the implicit `Declarative: Checkout SCM` stage tries to git-fetch `file:///home/dk/Documents/git/testing-grounds` on the Mac Mini, fails, and the pipeline skips all stages.
+**Cause:** If `skipDefaultCheckout(true)` is missing, the implicit `Declarative: Checkout SCM` stage tries to git-fetch `file:///home/dk/Documents/git/pulse` on the Mac Mini agent. That path only exists on the Linux k8s host — not on the Mac Mini — so it fails and the pipeline skips all stages.
 
 **Fix:** Ensure all three Jenkinsfiles have `options { skipDefaultCheckout(true) }`.
 
