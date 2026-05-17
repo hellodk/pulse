@@ -103,10 +103,10 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
     environment {
         ENV_LOWER  = params.ENVIRONMENT.toLowerCase()
-        APP_NAME   = 'BankNow'
-        BUNDLE_ID  = 'com.yourbank.banknow'
-        WORKSPACE  = 'BankNow.xcworkspace'
-        SCHEME     = "BankNow_${params.ENVIRONMENT}"
+        APP_NAME     = 'BankNow'
+        BUNDLE_ID    = 'com.yourbank.banknow'
+        XC_WORKSPACE = 'BankNow.xcworkspace'   // xcodebuild -workspace flag; NOT the Jenkins workspace dir
+        SCHEME       = "BankNow_${params.ENVIRONMENT}"
         // Keychain name must match generate-dummy-signing.sh config
         DUMMY_KEYCHAIN = 'ios-banknow-dummy.keychain'
     }
@@ -126,11 +126,13 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
             agent { label params.AGENT }
             options { skipDefaultCheckout(true) }
             steps {
-                checkout scm
+                // Checkout the BankNow app — clone it to the Mac Mini first:
+                //   git clone <repo> /Users/dk/jenkins-agent/git/BankNow
+                git url: 'file:///Users/dk/jenkins-agent/git/BankNow', branch: 'main'
                 sh """#!/bin/bash
                 set -euo pipefail
                 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-                cd "${env.APP_NAME}/ios/.."   # project root
+                # workspace root IS the app root after git checkout above
 
                 mkdir -p "\${WORKSPACE}/build"
 
@@ -220,9 +222,13 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        SCRIPT_PATH="${env.WORKSPACE}/jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh"
-                        chmod +x "\${SCRIPT_PATH}"
-                        "\${SCRIPT_PATH}"
+                        PULSE_DIR=""
+                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                            [ -f "\$P/jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh" ] && PULSE_DIR="\$P" && break
+                        done
+                        [ -z "\$PULSE_DIR" ] && echo "ERROR: cannot find generate-dummy-signing.sh — clone pulse repo to ~/Documents/git/pulse on this agent" && exit 1
+                        chmod +x "\$PULSE_DIR/jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh"
+                        "\$PULSE_DIR/jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh"
                         """
 
                     } else {
@@ -348,7 +354,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     fi
 
                     echo "── xcodebuild archive ───────────────────────────────────"
-                    echo "  Workspace : ${env.WORKSPACE}"
+                    echo "  Workspace : ${env.XC_WORKSPACE}"
                     echo "  Scheme    : ${env.SCHEME}"
                     echo "  Identity  : ${certIdentity}"
                     echo "  Dummy     : ${params.DUMMY_SIGNING}"
@@ -359,7 +365,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     # The pipe must not suppress the exit code, so use a PIPESTATUS check.
                     set -o pipefail
                     xcodebuild archive \\
-                        -workspace "${env.WORKSPACE}" \\
+                        -workspace "${env.XC_WORKSPACE}" \\
                         -scheme    "${env.SCHEME}" \\
                         -configuration Release \\
                         -archivePath "\${WORKSPACE}/build/${env.APP_NAME}.xcarchive" \\
@@ -442,8 +448,13 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         ARCHIVE_PATH="\${WORKSPACE}/build/${env.APP_NAME}.xcarchive"
-                        EXPORT_PLIST="\${WORKSPACE}/jenkins-k8s/ios/option-4-enterprise/dummy-signing/ExportOptions-enterprise.plist"
                         IPA_DIR="\${WORKSPACE}/build/export"
+                        PULSE_DIR=""
+                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                            [ -f "\$P/jenkins-k8s/ios/option-4-enterprise/dummy-signing/ExportOptions-enterprise.plist" ] && PULSE_DIR="\$P" && break
+                        done
+                        [ -z "\$PULSE_DIR" ] && echo "ERROR: cannot find ExportOptions-enterprise.plist — clone pulse repo to ~/Documents/git/pulse" && exit 1
+                        EXPORT_PLIST="\$PULSE_DIR/jenkins-k8s/ios/option-4-enterprise/dummy-signing/ExportOptions-enterprise.plist"
 
                         echo "── xcodebuild -exportArchive ────────────────────────"
 
@@ -584,7 +595,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         PULSE_DIR=""
-                        for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
                             [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
                         done
                         [ -z "\$PULSE_DIR" ] && echo "LLM scripts not found on this agent — skipping analysis" && exit 1
@@ -606,7 +617,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         PULSE_DIR=""
-                        for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
                             [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
                         done
                         [ -z "\$PULSE_DIR" ] && echo "PULSE_DIR not found — skipping LLM analysis" && exit 1
