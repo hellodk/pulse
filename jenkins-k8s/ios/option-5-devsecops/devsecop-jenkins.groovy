@@ -376,7 +376,10 @@ pipeline {
 
         /*
          * ============================================================
-         * PUBLISH PREVIEW REPORT
+         * PUBLISH PREVIEW REPORT + NOTIFY
+         * Generates a rich HTML dashboard with embedded Approve/Abort
+         * buttons, then sends an email with the same links so the user
+         * never has to interact with the Jenkins console.
          * ============================================================
          */
 
@@ -384,91 +387,111 @@ pipeline {
 
             steps {
 
-                sh '''
-                    cat <<EOF > ${PREVIEW_DIR}/index.html
+                sh '''#!/bin/bash
+APPROVE_URL="${BUILD_URL}input/deploy-approval/proceedEmpty"
+ABORT_URL="${BUILD_URL}input/deploy-approval/abort"
 
-                    <html>
-                    <head>
-                        <title>Release Preview</title>
+cat > ${PREVIEW_DIR}/index.html <<HTMLEOF
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Release Preview &mdash; ${VERSION}</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:-apple-system,Arial,sans-serif;background:#0d1117;color:#c9d1d9;}
+    .header{background:linear-gradient(135deg,#1f6feb,#388bfd);padding:24px 32px;}
+    .header h1{font-size:22px;color:#fff;font-weight:700;}
+    .header p{margin-top:6px;font-size:13px;color:rgba(255,255,255,.8);}
+    .container{max-width:1100px;margin:0 auto;padding:24px 32px;}
+    .approval{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px 24px;margin-bottom:24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+    .approval p{flex:1;font-size:14px;color:#8b949e;min-width:200px;}
+    .btn{display:inline-block;padding:10px 28px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:700;}
+    .approve{background:#238636;color:#fff;}
+    .abort{background:#b62324;color:#fff;}
+    .card{background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:18px;overflow:hidden;}
+    .card-hdr{padding:13px 20px;border-bottom:1px solid #30363d;font-size:14px;font-weight:600;color:#f0f6fc;}
+    .card-body{padding:16px 20px;}
+    .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;}
+    .meta-item{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:12px 16px;}
+    .meta-item label{display:block;font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+    .meta-item span{font-size:15px;font-weight:600;color:#f0f6fc;}
+    table{width:100%;border-collapse:collapse;font-size:13px;}
+    th{background:#21262d;color:#8b949e;padding:9px 12px;text-align:left;font-weight:500;}
+    td{padding:9px 12px;border-bottom:1px solid #21262d;color:#c9d1d9;}
+    tr:last-child td{border-bottom:none;}
+    pre{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-size:12px;line-height:1.6;overflow:auto;white-space:pre-wrap;word-break:break-all;max-height:420px;}
+    code{background:#21262d;padding:2px 6px;border-radius:4px;font-size:12px;font-family:monospace;}
+    .ftr{text-align:center;padding:28px 0 16px;font-size:11px;color:#484f58;}
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>&#128230; Release Preview Dashboard</h1>
+  <p>${JOB_NAME} &middot; Build #${BUILD_NUMBER} &middot; ${VERSION}</p>
+</div>
+<div class="container">
 
-                        <style>
-                            body {
-                                font-family: Arial;
-                                margin: 20px;
-                                background: #f4f4f4;
-                            }
+  <div class="approval">
+    <p>Review all changes below, then approve or abort the production deployment.<br>
+    You must be logged into Jenkins to use these buttons.</p>
+    <a href="${APPROVE_URL}" class="btn approve">&#9989;&nbsp;&nbsp;Approve Deploy</a>
+    <a href="${ABORT_URL}" class="btn abort">&#10060;&nbsp;&nbsp;Abort</a>
+  </div>
 
-                            h1,h2 {
-                                color: #333;
-                            }
+  <div class="card">
+    <div class="card-hdr">&#127381; Build Info</div>
+    <div class="card-body">
+      <div class="meta">
+        <div class="meta-item"><label>Version</label><span>${VERSION}</span></div>
+        <div class="meta-item"><label>Commit</label><span><code>${SHORT_SHA}</code></span></div>
+        <div class="meta-item"><label>Environment</label><span>${ENVIRONMENT}</span></div>
+        <div class="meta-item"><label>Build</label><span>#${BUILD_NUMBER}</span></div>
+      </div>
+    </div>
+  </div>
 
-                            pre {
-                                background: white;
-                                padding: 15px;
-                                border-radius: 6px;
-                                overflow-x: auto;
-                            }
+  <div class="card">
+    <div class="card-hdr">&#128200; Git Commits</div>
+    <div class="card-body">
+      <table>
+        <tr><th>Commit</th><th>Author</th><th>Date</th><th>Message</th></tr>
+        $(cat ${PREVIEW_DIR}/commits.html 2>/dev/null || echo '<tr><td colspan="4" style="color:#484f58">No commits found</td></tr>')
+      </table>
+    </div>
+  </div>
 
-                            table {
-                                border-collapse: collapse;
-                                width: 100%;
-                                background: white;
-                            }
+  <div class="card">
+    <div class="card-hdr">&#128196; Changed Files</div>
+    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/changed-files.txt 2>/dev/null || echo 'No changes')</pre></div>
+  </div>
 
-                            td, th {
-                                border: 1px solid #ddd;
-                                padding: 8px;
-                            }
+  <div class="card">
+    <div class="card-hdr">&#128202; Diff Stat</div>
+    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/git-diff-stat.txt 2>/dev/null || echo 'Not available')</pre></div>
+  </div>
 
-                            th {
-                                background: #222;
-                                color: white;
-                            }
-                        </style>
+  <div class="card">
+    <div class="card-hdr">&#9881;&#65039; Helm Diff</div>
+    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/helm-diff.txt 2>/dev/null || echo 'Not available or no changes')</pre></div>
+  </div>
 
-                    </head>
+  <div class="card">
+    <div class="card-hdr">&#128274; ConfigMap Diff</div>
+    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/configmap-diff.txt 2>/dev/null || echo 'No configmap changes')</pre></div>
+  </div>
 
-                    <body>
+  <div class="card">
+    <div class="card-hdr">&#128272; Secret Diff</div>
+    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/secret-diff.txt 2>/dev/null || echo 'No secret changes')</pre></div>
+  </div>
 
-                    <h1>Release Preview Dashboard</h1>
-
-                    <h2>Version</h2>
-                    <p>${VERSION}</p>
-
-                    <h2>Git Commits</h2>
-
-                    <table>
-                    <tr>
-                        <th>Commit</th>
-                        <th>Author</th>
-                        <th>Date</th>
-                        <th>Message</th>
-                    </tr>
-
-                    $(cat ${PREVIEW_DIR}/commits.html)
-
-                    </table>
-
-                    <h2>Changed Files</h2>
-                    <pre>$(cat ${PREVIEW_DIR}/changed-files.txt)</pre>
-
-                    <h2>Git Diff Stat</h2>
-                    <pre>$(cat ${PREVIEW_DIR}/git-diff-stat.txt)</pre>
-
-                    <h2>Helm Diff</h2>
-                    <pre>$(cat ${PREVIEW_DIR}/helm-diff.txt)</pre>
-
-                    <h2>ConfigMap Diff</h2>
-                    <pre>$(cat ${PREVIEW_DIR}/configmap-diff.txt)</pre>
-
-                    <h2>Secret Diff</h2>
-                    <pre>$(cat ${PREVIEW_DIR}/secret-diff.txt)</pre>
-
-                    </body>
-                    </html>
-
-                    EOF
-                '''
+  <div class="ftr">Jenkins CI &middot; ${JOB_NAME} &middot; ${BUILD_URL}</div>
+</div>
+</body>
+</html>
+HTMLEOF
+'''
 
                 publishHTML([
                     allowMissing         : false,
@@ -478,6 +501,67 @@ pipeline {
                     reportFiles          : 'index.html',
                     reportName           : 'Release Preview Dashboard'
                 ])
+
+                script {
+                    if (params.NOTIFY_EMAIL?.trim()) {
+                        def approveUrl  = "${env.BUILD_URL}input/deploy-approval/proceedEmpty"
+                        def abortUrl    = "${env.BUILD_URL}input/deploy-approval/abort"
+                        def dashUrl     = "${env.BUILD_URL}Release_20Preview_20Dashboard"
+                        def ver         = env.VERSION ?: env.BUILD_NUMBER
+                        def sha         = env.SHORT_SHA ?: (env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : 'N/A')
+                        def ts          = new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))
+                        emailext(
+                            subject: "&#9989; Approval Required: ${env.JOB_NAME} #${env.BUILD_NUMBER} — ready to deploy ${ver}",
+                            mimeType: 'text/html',
+                            to: params.NOTIFY_EMAIL,
+                            body: """
+<html><head><style>
+  body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+  .wrap{max-width:700px;margin:0 auto;}
+  .hdr{background:linear-gradient(135deg,#1f6feb,#388bfd);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+  .hdr h1{margin:0;font-size:20px;} .hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+  .body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}
+  tr:nth-child(odd) td{background:#fafbfc;}
+  .lbl{font-weight:600;color:#555;width:140px;}
+  .actions{margin:24px 0;text-align:center;}
+  .btn{display:inline-block;padding:12px 32px;border-radius:6px;text-decoration:none;font-size:15px;font-weight:700;margin:0 8px;}
+  .approve{background:#238636;color:#fff;}
+  .abort{background:#b62324;color:#fff;}
+  .note{font-size:11px;color:#888;margin-top:10px;text-align:center;}
+  .dash{margin-top:16px;text-align:center;}
+  .dash a{color:#0078d4;font-size:13px;}
+  .ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+  <div class="hdr">
+    <h1>&#9989; Production Deployment Approval Required</h1>
+    <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${ts}</p>
+  </div>
+  <div class="body">
+    <table>
+      <tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+      <tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+      <tr><td class="lbl">Version</td><td><strong>${ver}</strong></td></tr>
+      <tr><td class="lbl">Commit</td><td><code>${sha}</code></td></tr>
+      <tr><td class="lbl">Environment</td><td>${env.ENVIRONMENT ?: 'prod'}</td></tr>
+    </table>
+    <div class="actions">
+      <a href="${approveUrl}" class="btn approve">&#9989;&nbsp;&nbsp;Approve Deploy</a>
+      <a href="${abortUrl}"   class="btn abort">&#10060;&nbsp;&nbsp;Abort</a>
+      <p class="note">You must be logged into Jenkins to use these buttons &middot; Expires in 24 hours</p>
+    </div>
+    <div class="dash">
+      <a href="${dashUrl}">&#128230; Open full Release Preview Dashboard</a>
+      &nbsp;&middot;&nbsp;
+      <a href="${env.BUILD_URL}">Open Build</a>
+    </div>
+  </div>
+  <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                        )
+                    }
+                }
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -486,28 +570,19 @@ pipeline {
 
         /*
          * ============================================================
-         * MANUAL APPROVAL
+         * APPROVAL GATE
+         * Waits silently — user acts from email or Release Preview
+         * Dashboard, never from the Jenkins console.
          * ============================================================
          */
 
         stage('Approval Gate') {
-
             steps {
-
-                timeout(time: 2, unit: 'HOURS') {
-
+                timeout(time: 24, unit: 'HOURS') {
                     input(
-                        message: """
-                        Review:
-                        - Git Changes
-                        - Helm Diff
-                        - ConfigMap Diff
-                        - Secret Diff
-                        - Vulnerability Reports
-
-                        Proceed to production?
-                        """,
-                        ok: "Deploy"
+                        id:      'deploy-approval',
+                        message: 'Waiting for approval. Check your email or open the Release Preview Dashboard.',
+                        ok:      'Deploy'
                     )
                 }
             }
