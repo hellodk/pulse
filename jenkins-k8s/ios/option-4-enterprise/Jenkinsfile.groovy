@@ -591,7 +591,7 @@ set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 PULSE_DIR="/tmp/pulse-zip-\$\$"
 git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    http://dk:admin123@192.168.1.10:30300/dk/pulse.git \
     "\$PULSE_DIR" 2>/dev/null || true
 if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
     bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
@@ -606,7 +606,7 @@ rm -rf "\$PULSE_DIR"
 
                         PULSE_DIR="/tmp/pulse-\$\$"
                         git clone --depth 1 --single-branch --branch master \
-                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+                            http://dk:admin123@192.168.1.10:30300/dk/pulse.git \
                             "\$PULSE_DIR" 2>/dev/null \
                           || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
@@ -628,7 +628,7 @@ rm -rf "\$PULSE_DIR"
 
                         PULSE_DIR="/tmp/pulse-\$\$"
                         git clone --depth 1 --single-branch --branch master \
-                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+                            http://dk:admin123@192.168.1.10:30300/dk/pulse.git \
                             "\$PULSE_DIR" 2>/dev/null \
                           || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
