@@ -48,8 +48,9 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '30'))
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
         timeout(time: 90, unit: 'MINUTES')
+        skipDefaultCheckout(true)
     }
 
     parameters {
@@ -1027,30 +1028,27 @@ tr:nth-child(odd) td{background:#fafbfc;}
                 node('cylon-agent') {
                     def llmReport = 'LLM analysis not available.'
                     try {
-                        sh """#!/bin/bash
+                        timeout(time: 5, unit: 'MINUTES') {
+                            withCredentials([usernamePassword(
+                                credentialsId: 'gitea-pulse-creds',
+                                usernameVariable: 'GITEA_USR',
+                                passwordVariable: 'GITEA_PSW'
+                            )]) {
+                                sh """#!/bin/bash
 set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-PULSE_DIR="/tmp/pulse-zip-\$\$"
-git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-    "\$PULSE_DIR" 2>/dev/null || true
-if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
-    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
-fi
-rm -rf "\$PULSE_DIR"
-"""
-                        archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
-                        sh """#!/bin/bash
-set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-PULSE_DIR="/tmp/pulse-\$\$"
-git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-    "\$PULSE_DIR" 2>/dev/null \
-  || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
+PULSE_DIR="\$(mktemp -d)"
+git clone --depth 1 --single-branch --branch master \\
+    "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
+    "\$PULSE_DIR" 2>/dev/null \\
+  || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
 
-bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
+
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \\
+    > build-error-report.txt 2>/dev/null || true
+
 export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
 export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
 export LOG_TAIL="\${ERROR_SNIPPET}"
@@ -1059,10 +1057,13 @@ export JOB_NAME="${env.JOB_NAME}"
 export BUILD_TYPE="DevSecOps-K8s"
 export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
 export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh" || true
+
 rm -rf "\$PULSE_DIR"
 """
-                    archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                            }
+                        }
+                        archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
                         if (fileExists('llm-analysis.md')) { llmReport = readFile('llm-analysis.md') }
                     } catch (e) {
                         llmReport = "LLM analysis failed: ${e.message}"

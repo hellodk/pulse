@@ -98,7 +98,8 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
         timeout(time: 60, unit: 'MINUTES')
         disableConcurrentBuilds()
         timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        skipDefaultCheckout(true)
     }
 
     environment {
@@ -586,51 +587,26 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     def llmAvailable = false
 
                     try {
-                        sh """#!/bin/bash
-set -eo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-PULSE_DIR="/tmp/pulse-zip-\$\$"
-git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-    "\$PULSE_DIR" 2>/dev/null || true
-if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
-    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
-fi
-rm -rf "\$PULSE_DIR"
-"""
-                        archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
-                        // ── Smart log extraction ──────────────────────────────
-                        sh """#!/bin/bash -l
-                        set -euo pipefail
+                        timeout(time: 5, unit: 'MINUTES') {
+                            withCredentials([usernamePassword(
+                                credentialsId: 'gitea-pulse-creds',
+                                usernameVariable: 'GITEA_USR',
+                                passwordVariable: 'GITEA_PSW'
+                            )]) {
+                                sh """#!/bin/bash -l
+                        set -eo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        PULSE_DIR="/tmp/pulse-\$\$"
-                        git clone --depth 1 --single-branch --branch master \
-                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-                            "\$PULSE_DIR" 2>/dev/null \
-                          || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
+                        PULSE_DIR="\$(mktemp -d)"
+                        git clone --depth 1 --single-branch --branch master \\
+                            "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
+                            "\$PULSE_DIR" 2>/dev/null \\
+                          || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
 
-                        export WORKSPACE="\${WORKSPACE}"
-                        export MAX_LINES=200
-                        export MAX_LINE_LEN=300
+                        bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
 
-                        bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
-
-                        REPORT_LINES=\$(wc -l < build-error-report.txt | tr -d ' ')
-                        echo "Error report: \${REPORT_LINES} lines (sent to LLM)"
-                        rm -rf "\$PULSE_DIR"
-                        """
-
-                        // 2. Run LLM analysis with the concise error report
-                        sh """#!/bin/bash -l
-                        set -euo pipefail
-                        export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-
-                        PULSE_DIR="/tmp/pulse-\$\$"
-                        git clone --depth 1 --single-branch --branch master \
-                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-                            "\$PULSE_DIR" 2>/dev/null \
-                          || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
+                        bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \\
+                            > build-error-report.txt 2>/dev/null || true
 
                         export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
                         export BUILD_NUMBER="${env.BUILD_NUMBER}"
@@ -638,36 +614,25 @@ rm -rf "\$PULSE_DIR"
                         export BUILD_TYPE="iOS-Enterprise"
                         export APP_NAME="${env.APP_NAME}"
                         export ENVIRONMENT="${params.ENVIRONMENT}"
-
-                        # ERROR_SNIPPET: the smart-extracted error report (≤200 lines)
-                        # LOG_TAIL: kept for compatibility but set to same content
                         export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Extraction failed')"
                         export LOG_TAIL="\${ERROR_SNIPPET}"
-
-                        # Configurable endpoints — overridden by pipeline parameters
                         export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
                         export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-
                         export EXTRA_CONTEXT="Signing mode: ${params.DUMMY_SIGNING ? 'dummy self-signed (no Apple account)' : 'real enterprise certificate'}.
 macOS Tahoe (26) — known codesign issues:
   - errSecInternalComponent: missing security set-key-partition-list on keychain
   - errSecInteractionNotAllowed: keychain locked under launchd Jenkins agent
-  - Provisioning profile requires Apple CMS signing for device installation
-React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages.
-CocoaPods for iOS dependency management.
-Archive stage pipes through tee + xcpretty; raw log saved to build/xcodebuild-raw.log.
-DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, not -exportArchive."
+React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages."
 
-                        bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
-                        echo "LLM analysis complete → llm-analysis.md"
+                        bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh" || true
+
                         rm -rf "\$PULSE_DIR"
                         """
+                            }
+                        }
+                        archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
 
-                        // 3. Archive the report as a build artifact
-                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
-
-                        // 4. Read the report — readFile() is sandbox-safe (whitelisted Jenkins step)
-                        //    This is the correct alternative to currentBuild.rawBuild.getLog()
+                        // Read the report — readFile() is sandbox-safe (whitelisted Jenkins step)
                         if (fileExists('llm-analysis.md')) {
                             llmReport    = readFile('llm-analysis.md')
                             llmAvailable = true

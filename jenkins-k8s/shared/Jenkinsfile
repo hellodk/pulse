@@ -1,6 +1,13 @@
 pipeline {
     agent { label 'android-agent' }
 
+    options {
+        skipDefaultCheckout(true)
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
     parameters {
         string(name: 'NOTIFY_EMAIL',
                defaultValue: 'reject@hellodk.io',
@@ -22,6 +29,22 @@ pipeline {
     }
 
     stages {
+        stage('Agent Health Check') {
+            steps {
+                script {
+                    def offlineAgents = Jenkins.instance.computers
+                        .findAll { it.offline && it.displayName != 'Built-In Node' }
+                        .collect { it.displayName }
+                    if (offlineAgents) {
+                        echo "⚠ WARNING: Offline agents detected: ${offlineAgents.join(', ')}"
+                        currentBuild.description = "⚠ Offline agents: ${offlineAgents.join(', ')}"
+                    } else {
+                        echo "✓ All registered agents online"
+                    }
+                }
+            }
+        }
+
         stage('Checkout') {
             steps {
                 git url: 'file:///home/dk/Documents/git/sunflower', branch: 'main'
@@ -63,6 +86,18 @@ pipeline {
                 """
             }
             post { failure { script { env.FAILED_STAGE = 'Build Debug APK' } } }
+        }
+
+        stage('Build Release APK') {
+            steps {
+                sh './gradlew assembleRelease --stacktrace || true'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'app/build/outputs/apk/release/*.apk', allowEmptyArchive: true
+                }
+                failure { script { env.FAILED_STAGE = 'Build Release APK' } }
+            }
         }
 
         stage('Unit Tests') {
@@ -230,31 +265,25 @@ pipeline {
             script {
                 def llmReport = 'LLM analysis not available — check Ollama endpoint connectivity.'
                 try {
-                    sh """#!/bin/bash
+                    timeout(time: 5, unit: 'MINUTES') {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'gitea-pulse-creds',
+                            usernameVariable: 'GITEA_USR',
+                            passwordVariable: 'GITEA_PSW'
+                        )]) {
+                            sh """#!/bin/bash
 set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
-PULSE_DIR="/tmp/pulse-zip-\$\$"
-git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-    "\$PULSE_DIR" 2>/dev/null || true
-if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
-    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
-fi
-rm -rf "\$PULSE_DIR"
-"""
-                    archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
-                    sh """#!/bin/bash
-set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-PULSE_DIR="/tmp/pulse-\$\$"
-git clone --depth 1 --single-branch --branch master \
-    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
-    "\$PULSE_DIR" 2>/dev/null \
-  || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
+PULSE_DIR="\$(mktemp -d)"
+git clone --depth 1 --single-branch --branch master \\
+    "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
+    "\$PULSE_DIR" 2>/dev/null \\
+  || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
 
-# Smart extraction: grabs Gradle errors, lint issues, test failures
-bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \
+bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
+
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \\
     > build-error-report.txt 2>/dev/null || true
 
 export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
@@ -266,11 +295,13 @@ export BUILD_TYPE="Android-APK"
 export APP_NAME="Sunflower"
 export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
 export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh" || true
+
 rm -rf "\$PULSE_DIR"
 """
+                        }
+                    }
                     archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
-                    // readFile is sandbox-safe (whitelisted Jenkins step — no rawBuild needed)
                     if (fileExists('llm-analysis.md')) {
                         llmReport = readFile('llm-analysis.md')
                     }
