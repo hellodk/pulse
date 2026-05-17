@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:944px; height:392px;
+    background:#F9FAFB;
+    overflow:hidden;
+    font-family:'Geist',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .canvas {
+    margin:32px;
+    background:#FFFFFF;
+    border:1px solid #E5E7EB;
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:0 1px 4px rgba(0,0,0,.08);
+  }
+  .caption {
+    position:absolute;
+    bottom:10px; left:0; right:0;
+    text-align:center;
+    font-family:'Geist Mono',monospace;
+    font-size:13px;
+    color:#9CA3AF;
+    letter-spacing:.05em;
+  }
+</style>
+</head>
+<body>
+  <div class="canvas"><svg width="880" height="280" viewBox="0 0 880 280" xmlns="http://www.w3.org/2000/svg"
+         style="font-family:'Geist',system-ui,sans-serif;">
+      <rect width="880" height="280" fill="#F9FAFB"/>
+
+      <!-- Arrow marker -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#9CA3AF"/>
+        </marker>
+      </defs>
+
+      <!--
+        5 equal boxes: w=140, h=148, y=16
+        4 equal arrows: 38px gaps
+        Total: 5×140 + 4×38 = 700+152 = 852  left margin = (880-852)/2 = 14
+        Box x: 14, 192, 370, 548, 726
+        Arrow spans: 154-192, 332-370, 510-548, 688-726
+        Arrow midpoints: 173, 351, 529, 707
+        All arrows at mid-box y = 16+74 = 90
+      -->
+
+      <!-- ── Box 1: Developer (x:14–154) ── -->
+      <rect x="14" y="16" width="140" height="148" rx="8"
+            fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+      <rect x="14" y="16" width="140" height="32" rx="8" fill="#F9FAFB"/>
+      <rect x="14" y="36" width="140" height="12" fill="#F9FAFB"/>
+      <text x="84" y="35" fill="#111827" font-size="11" font-weight="600"
+            text-anchor="middle" letter-spacing=".04em">DEVELOPER</text>
+      <text x="84" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">runs git push</text>
+      <text x="84" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">to Gitea remote</text>
+      <rect x="24" y="88" width="120" height="44" rx="5"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="84" y="106" fill="#1D4ED8" font-size="10" text-anchor="middle"
+            font-family="'Geist Mono',monospace">$ git push</text>
+      <text x="84" y="121" fill="#1D4ED8" font-size="10" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  gitea master</text>
+      <text x="84" y="145" fill="#6B7280" font-size="10" text-anchor="middle">any Tailscale node</text>
+      <text x="84" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">①</text>
+
+      <!-- Arrow 1 (154→192) -->
+      <line x1="155" y1="90" x2="190" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="156" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="173" y="87" fill="#6B7280" font-size="11" text-anchor="middle">HTTPS</text>
+      <circle r="4" fill="#6D28D9" opacity="0">
+        <animate attributeName="cx" values="155;190" dur=".7s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+
+      <!-- ── Box 2: Gitea (x:192–332) ── -->
+      <rect x="192" y="16" width="140" height="148" rx="8"
+            fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+      <rect x="192" y="16" width="140" height="32" rx="8" fill="#DBEAFE"/>
+      <rect x="192" y="36" width="140" height="12" fill="#DBEAFE"/>
+      <text x="262" y="35" fill="#1D4ED8" font-size="11" font-weight="600"
+            text-anchor="middle">GITEA</text>
+      <text x="262" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">stores commit</text>
+      <text x="262" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">fires webhook</text>
+      <rect x="202" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="262" y="106" fill="#1E40AF" font-size="10.5" text-anchor="middle">t ≈ 0.1 s</text>
+      <text x="262" y="121" fill="#4B5563" font-size="10" text-anchor="middle">after git push</text>
+      <text x="262" y="145" fill="#4B5563" font-size="10" text-anchor="middle">POST → Jenkins :8080</text>
+      <text x="262" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">②</text>
+
+      <!-- Arrow 2 (332→370) -->
+      <line x1="333" y1="90" x2="368" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="334" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="351" y="87" fill="#6B7280" font-size="11" text-anchor="middle">webhook</text>
+      <circle r="4" fill="#1D4ED8" opacity="0">
+        <animate attributeName="cx" values="333;368" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+      </circle>
+
+      <!-- ── Box 3: Jenkins (x:370–510) ── -->
+      <rect x="370" y="16" width="140" height="148" rx="8"
+            fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+      <rect x="370" y="16" width="140" height="32" rx="8" fill="#FFEDD5"/>
+      <rect x="370" y="36" width="140" height="12" fill="#FFEDD5"/>
+      <text x="440" y="35" fill="#C2410C" font-size="11" font-weight="600"
+            text-anchor="middle">JENKINS</text>
+      <text x="440" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">receives webhook</text>
+      <text x="440" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">triggers pipeline</text>
+      <rect x="380" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#FED7AA" stroke-width="1"/>
+      <text x="440" y="106" fill="#92400E" font-size="10.5" text-anchor="middle">t ≈ 0.3 s</text>
+      <text x="440" y="121" fill="#4B5563" font-size="10" text-anchor="middle">dispatches stages</text>
+      <text x="440" y="145" fill="#4B5563" font-size="10" text-anchor="middle">to build agents</text>
+      <text x="440" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">③</text>
+
+      <!-- Arrow 3 (510→548) -->
+      <line x1="511" y1="90" x2="546" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="512" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="529" y="87" fill="#6B7280" font-size="11" text-anchor="middle">dispatch</text>
+      <circle r="4" fill="#C2410C" opacity="0">
+        <animate attributeName="cx" values="511;546" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+      </circle>
+
+      <!-- ── Box 4: Mac Mini (x:548–688) ── -->
+      <rect x="548" y="16" width="140" height="148" rx="8"
+            fill="#F0F9FF" stroke="#7DD3FC" stroke-width="1.5"/>
+      <rect x="548" y="16" width="140" height="32" rx="8" fill="#E0F2FE"/>
+      <rect x="548" y="36" width="140" height="12" fill="#E0F2FE"/>
+      <text x="618" y="35" fill="#0369A1" font-size="11" font-weight="600"
+            text-anchor="middle">MAC MINI</text>
+      <text x="618" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">git clone pulse</text>
+      <text x="618" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">from Gitea URL</text>
+      <rect x="558" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1"/>
+      <text x="618" y="106" fill="#0369A1" font-size="10.5" text-anchor="middle">always latest</text>
+      <text x="618" y="121" fill="#4B5563" font-size="10" text-anchor="middle">xcodebuild / fastlane</text>
+      <text x="618" y="145" fill="#4B5563" font-size="10" text-anchor="middle">LLM on failure</text>
+      <text x="618" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">④</text>
+
+      <!-- Arrow 4 (688→726) -->
+      <line x1="689" y1="90" x2="724" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="690" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="707" y="87" fill="#6B7280" font-size="11" text-anchor="middle">output</text>
+      <circle r="4" fill="#0369A1" opacity="0">
+        <animate attributeName="cx" values="689;724" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+      </circle>
+
+      <!-- ── Box 5: Build Ready (x:726–866, w=140) ── -->
+      <rect x="726" y="16" width="140" height="148" rx="8"
+            fill="#F0FDF4" stroke="#86EFAC" stroke-width="1.5"/>
+      <rect x="726" y="16" width="140" height="32" rx="8" fill="#DCFCE7"/>
+      <rect x="726" y="36" width="140" height="12" fill="#DCFCE7"/>
+      <text x="796" y="35" fill="#15803D" font-size="11" font-weight="600"
+            text-anchor="middle">BUILD READY</text>
+      <text x="796" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">.ipa / .apk built</text>
+      <text x="796" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">LLM report done</text>
+      <rect x="736" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#86EFAC" stroke-width="1"/>
+      <text x="796" y="106" fill="#15803D" font-size="10.5" text-anchor="middle">email sent</text>
+      <text x="796" y="121" fill="#4B5563" font-size="10" text-anchor="middle">Nexus + JFrog upload</text>
+      <text x="796" y="145" fill="#4B5563" font-size="10" text-anchor="middle">archived in Jenkins</text>
+      <text x="796" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">⑤</text>
+
+      <!-- Timeline bar -->
+      <rect x="14" y="206" width="852" height="2" rx="1" fill="#E5E7EB"/>
+      <rect x="14" y="206" width="0" height="2" rx="1" fill="#6D28D9">
+        <animate attributeName="width" values="0;852" dur="3.5s" repeatCount="indefinite"/>
+      </rect>
+
+      <!-- Time labels below timeline -->
+      <text x="84"  y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t = 0 s</text>
+      <text x="262" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 0.1 s</text>
+      <text x="440" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 0.3 s</text>
+      <text x="618" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 5–30 s</text>
+      <text x="796" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">build duration</text>
+
+    </svg></div>
+  <div class="caption">The Flow — Git Push to Build · pulse / jenkins-k8s</div>
+  <script>
+    // wait for fonts then signal ready
+    document.fonts.ready.then(() => document.title = 'READY');
+  </script>
+</body></html>

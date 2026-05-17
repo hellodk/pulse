@@ -1,0 +1,1189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>From Chaos to GitOps — Gitea on Kubernetes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── Design tokens — ui.md light theme ── */
+:root {
+  --bg:          #F9FAFB;
+  --card:        #FFFFFF;
+  --text:        #111827;
+  --text2:       #4B5563;
+  --text3:       #6B7280;
+  --border:      #E5E7EB;
+  --border2:     #F3F4F6;
+  --success:     #16A34A;
+  --warning:     #D97706;
+  --error:       #DC2626;
+  --blue:        #1D4ED8;
+  --blue-soft:   #EFF6FF;
+  --blue-bd:     #BFDBFE;
+  --orange:      #C2410C;
+  --orange-soft: #FFF7ED;
+  --orange-bd:   #FED7AA;
+  --green:       #15803D;
+  --green-soft:  #F0FDF4;
+  --green-bd:    #86EFAC;
+  --purple:      #6D28D9;
+  --purple-soft: #F5F3FF;
+  --purple-bd:   #C4B5FD;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── layout ── */
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 36px; }
+
+/* ── header ── */
+header { padding: 80px 0 64px; border-bottom: 1px solid var(--border); }
+
+.tags { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; }
+.tag {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-family: 'Geist Mono', monospace;
+}
+.tag-k8s { color: var(--purple); background: var(--purple-soft); border-color: var(--purple-bd); }
+.tag-git { color: var(--blue);   background: var(--blue-soft);   border-color: var(--blue-bd); }
+.tag-ci  { color: var(--orange); background: var(--orange-soft); border-color: var(--orange-bd); }
+.tag-ts  { color: var(--green);  background: var(--green-soft);  border-color: var(--green-bd); }
+
+h1 {
+  font-size: clamp(36px, 5.5vw, 58px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -.03em;
+  color: var(--text);
+  margin-bottom: 20px;
+}
+h1 em { font-style: normal; color: var(--blue); }
+
+.subtitle {
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--text2);
+  max-width: 600px;
+  line-height: 1.65;
+  margin-bottom: 28px;
+}
+.byline {
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  color: var(--text3);
+  display: flex; align-items: center; gap: 16px;
+}
+.byline b { color: var(--text2); font-weight: 500; }
+
+/* ── sections ── */
+section { padding: 64px 0; border-top: 1px solid var(--border); }
+
+.sec-num {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text3);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 10px;
+}
+
+h2 {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 18px;
+  letter-spacing: -.02em;
+  line-height: 1.25;
+}
+
+p { color: var(--text2); margin-bottom: 1.1em; font-size: 15px; }
+p:last-child { margin-bottom: 0; }
+p strong { color: var(--text); font-weight: 500; }
+
+/* ── callout ── */
+.callout {
+  border-left: 3px solid var(--blue);
+  background: var(--blue-soft);
+  padding: 16px 20px;
+  border-radius: 0 8px 8px 0;
+  margin: 28px 0;
+  color: #1E40AF;
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+/* ── diagram card ── */
+.diagram-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 32px 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+.diagram-label {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text3);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.diagram-card svg { display: block; width: 100%; height: auto; }
+
+/* ── code block ── */
+.code-wrap { background: #FFFFFF; border-radius: 10px; overflow: hidden; margin: 24px 0; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.code-header {
+  background: #F8FAFC;
+  padding: 10px 18px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: #6B7280;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+pre {
+  font-family: 'Geist Mono', monospace;
+  font-size: 13px;
+  line-height: 1.75;
+  color: #1E293B;
+  padding: 20px 18px;
+  overflow-x: auto;
+  background: #FFFFFF;
+}
+.kw  { color: #1D4ED8; }
+.cm  { color: #9CA3AF; font-style: italic; }
+.str { color: #16A34A; }
+.num { color: #D97706; }
+
+/* ── compare grid ── */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 24px 0; }
+.cbox { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+.cbox h4 { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 14px; }
+.cbox.before h4 { color: var(--error); }
+.cbox.after  h4 { color: var(--success); }
+.cbox ul { list-style: none; }
+.cbox li { font-size: 13.5px; color: var(--text2); padding: 4px 0; display: flex; gap: 8px; align-items: baseline; }
+.cbox li::before { content: '✕'; color: #F87171; flex-shrink: 0; font-size: 11px; font-weight: 600; }
+.cbox.after li::before { content: '✓'; color: var(--success); font-size: 11px; }
+
+/* ── step list ── */
+.steps { list-style: none; margin: 24px 0; }
+.steps li { display: flex; gap: 18px; padding: 18px 0; border-bottom: 1px solid var(--border); }
+.steps li:last-child { border-bottom: none; }
+.snum { font-size: 20px; font-weight: 700; color: var(--blue); min-width: 28px; line-height: 1; padding-top: 1px; }
+.stext strong { display: block; font-size: 14.5px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.stext p { margin-bottom: 0; font-size: 13.5px; }
+
+code {
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  background: var(--border2);
+  color: var(--blue);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+/* ── stats grid ── */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 28px 0; }
+@media (max-width: 640px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.stat {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 16px;
+  text-align: center;
+}
+.stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -.02em;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.stat-label {
+  font-size: 12px;
+  color: var(--text3);
+  font-family: 'Geist Mono', monospace;
+  letter-spacing: .04em;
+}
+
+/* ── svg legend ── */
+.svg-legend {
+  display: flex;
+  gap: 20px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-wrap: wrap;
+}
+.svg-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: var(--text3);
+}
+.svg-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+footer { border-top: 1px solid var(--border); padding: 40px 0; text-align: center; font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--text3); }
+
+/* ── fade in ── */
+.fade { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
+.fade.in { opacity: 1; transform: none; }
+
+/* ── SVG keyframes ── */
+@keyframes march { to { stroke-dashoffset: -16; } }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════ HEADER ══════════════════════════════ -->
+<header>
+<div class="wrap">
+  <div class="tags">
+    <span class="tag tag-k8s">Kubernetes</span>
+    <span class="tag tag-git">Gitea</span>
+    <span class="tag tag-ci">Jenkins CI</span>
+    <span class="tag tag-ts">Tailscale</span>
+  </div>
+  <h1>From Chaos<br>to <em>GitOps</em></h1>
+  <p class="subtitle">
+    How a single Gitea pod inside your Kubernetes cluster eliminates the fragile script-syncing
+    hacks that haunt every distributed CI setup — and gives you a real Git workflow for free.
+  </p>
+  <div class="byline">
+    <b>pulse / jenkins-k8s</b>
+    <span>·</span>
+    <span>Infrastructure Notes</span>
+    <span>·</span>
+    <span>2026</span>
+  </div>
+</div>
+</header>
+
+<!-- ══════════════════════════════ 1. THE PROBLEM ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">01 — The Problem</span>
+  <h2>The repo that only lives on one machine</h2>
+  <p>
+    The <em>pulse</em> repository holds every Jenkins pipeline and every shared script the CI
+    infrastructure depends on — <code>llm-analysis.sh</code>, <code>extract-build-errors.sh</code>,
+    signing scripts, Helm charts. It lives as a plain directory on a single Linux host.
+  </p>
+  <p>
+    When a Mac Mini build agent needs those scripts, it has to <strong>already know where they are</strong>.
+    Every Jenkinsfile carries a resolver loop — a patch stitched over a structural gap. The repo is manually
+    cloned once and left to drift. One missed <code>git pull</code> and builds fail in ways that are
+    genuinely hard to trace.
+  </p>
+  <div class="callout">
+    The PULSE_DIR resolver isn't the problem — it's the symptom. There is no authoritative,
+    network-accessible source of truth for the repository.
+  </div>
+
+  <!--
+    SVG 1 — THE PROBLEM   viewBox="0 0 880 460"
+    ───────────────────────────────────────────────────────────────────
+    Column 1 — Cylon box:      x=16,  y=16, w=216, h=428  (x: 16–232)
+    Column 2 — Agent boxes:    x=296, w=202, h=128 each    (x: 296–498)
+      Agent 1: y=16,  center-y=80
+      Agent 2: y=164, center-y=228   (gap 20px)
+      Agent 3: y=312, center-y=376   (gap 20px)
+    Column 3 — PULSE_DIR box:  x=562, y=16, w=302, h=428  (x: 562–864)
+    Gap A (cylon→agents):  x=232–296  (64px)
+    Gap B (agents→resolver): x=498–562 (64px)
+    H-lines at y=80, 228, 376 — travel only through gaps A and B
+    ───────────────────────────────────────────────────────────────────
+  -->
+  <div class="diagram-card fade">
+    <div class="diagram-label">fig. 1 — current state: local-only repo, manual sync, fragile paths</div>
+    <svg viewBox="0 0 880 460" xmlns="http://www.w3.org/2000/svg"
+         style="font-family:'Geist',system-ui,sans-serif;">
+      <rect width="880" height="460" fill="#F9FAFB"/>
+
+      <!-- ── Column 1: CYLON HOST box (x:16–232, y:16–444) ── -->
+      <rect x="16" y="16" width="216" height="428" rx="10"
+            fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+      <!-- header band -->
+      <rect x="16" y="16" width="216" height="40" rx="10" fill="#F9FAFB"/>
+      <rect x="16" y="44" width="216" height="12" fill="#F9FAFB"/>
+      <text x="124" y="41" fill="#111827" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".04em">CYLON HOST</text>
+      <text x="124" y="68" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">192.168.1.10</text>
+
+      <!-- Repo block (x:32–216, y:82–210) -->
+      <rect x="32" y="82" width="184" height="128" rx="8"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.2"/>
+      <text x="124" y="108" fill="#1D4ED8" font-size="12" font-weight="600"
+            text-anchor="middle">pulse.git</text>
+      <text x="124" y="127" fill="#4B5563" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">/home/dk/Documents/</text>
+      <text x="124" y="143" fill="#4B5563" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">git/pulse</text>
+      <rect x="44" y="155" width="160" height="44" rx="6"
+            fill="#DBEAFE" stroke="#93C5FD" stroke-width="1"/>
+      <text x="124" y="173" fill="#1E40AF" font-size="11" text-anchor="middle">No remote origin</text>
+      <text x="124" y="190" fill="#1E40AF" font-size="10" text-anchor="middle">local-only · master</text>
+
+      <!-- Warning block (x:32–216, y:228–396) -->
+      <rect x="32" y="228" width="184" height="132" rx="8"
+            fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.2">
+        <animate attributeName="stroke-opacity" values="1;.4;1" dur="2.4s" repeatCount="indefinite"/>
+      </rect>
+      <text x="124" y="256" fill="#DC2626" font-size="12" font-weight="600"
+            text-anchor="middle">⚠  LOCAL ONLY</text>
+      <text x="124" y="278" fill="#B91C1C" font-size="11" text-anchor="middle">Agents clone manually, once.</text>
+      <text x="124" y="298" fill="#B91C1C" font-size="11" text-anchor="middle">No pull = stale scripts.</text>
+      <text x="124" y="318" fill="#B91C1C" font-size="11" text-anchor="middle">Silent build failures.</text>
+      <text x="124" y="338" fill="#B91C1C" font-size="11" text-anchor="middle">New agent = manual step.</text>
+
+      <!-- ── Column 2: Agent boxes (x:296–498) ── -->
+
+      <!-- Agent 1 (y:16–144, center-y=80) -->
+      <rect x="296" y="16" width="202" height="128" rx="8"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.2"/>
+      <rect x="296" y="16" width="202" height="36" rx="8" fill="#F0F9FF"/>
+      <rect x="296" y="40" width="202" height="12" fill="#F0F9FF"/>
+      <text x="397" y="38" fill="#0369A1" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".03em">MOBILEAPP-M3</text>
+      <text x="397" y="64" fill="#4B5563" font-size="11" text-anchor="middle">ios-agent · Mac Mini M3</text>
+      <text x="397" y="80" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">100.89.50.27</text>
+      <rect x="312" y="90" width="170" height="38" rx="5"
+            fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
+      <text x="397" y="107" fill="#DC2626" font-size="10.5" text-anchor="middle">~/Documents/git/pulse</text>
+      <text x="397" y="121" fill="#B91C1C" font-size="10" text-anchor="middle">manually cloned — may be stale</text>
+
+      <!-- Agent 2 (y:164–292, center-y=228) -->
+      <rect x="296" y="164" width="202" height="128" rx="8"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.2"/>
+      <rect x="296" y="164" width="202" height="36" rx="8" fill="#F0F9FF"/>
+      <rect x="296" y="188" width="202" height="12" fill="#F0F9FF"/>
+      <text x="397" y="186" fill="#0369A1" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".03em">IOS-AGENT</text>
+      <text x="397" y="212" fill="#4B5563" font-size="11" text-anchor="middle">ios-agent · Mac Mini</text>
+      <text x="397" y="228" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">100.104.14.62</text>
+      <rect x="312" y="238" width="170" height="38" rx="5"
+            fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
+      <text x="397" y="255" fill="#DC2626" font-size="10.5" text-anchor="middle">~/Documents/git/pulse</text>
+      <text x="397" y="269" fill="#B91C1C" font-size="10" text-anchor="middle">manually cloned — may be stale</text>
+
+      <!-- Agent 3 (y:312–440, center-y=376) -->
+      <rect x="296" y="312" width="202" height="128" rx="8"
+            fill="#FFFFFF" stroke="#86EFAC" stroke-width="1.2"/>
+      <rect x="296" y="312" width="202" height="36" rx="8" fill="#F0FDF4"/>
+      <rect x="296" y="336" width="202" height="12" fill="#F0FDF4"/>
+      <text x="397" y="334" fill="#15803D" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".03em">ANDROID BUILD POD</text>
+      <text x="397" y="360" fill="#4B5563" font-size="11" text-anchor="middle">Kubernetes pod · cylon-agent</text>
+      <text x="397" y="376" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">/home/dk/.../git/pulse</text>
+      <rect x="312" y="386" width="170" height="38" rx="5"
+            fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
+      <text x="397" y="403" fill="#DC2626" font-size="10.5" text-anchor="middle">hostPath mount</text>
+      <text x="397" y="417" fill="#B91C1C" font-size="10" text-anchor="middle">no git history, no versioning</text>
+
+      <!-- ── Gap A connection lines (x:232–296) at y=80, 228, 376 ── -->
+      <line x1="232" y1="80" x2="296" y2="80"
+            stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur="1s" repeatCount="indefinite"/>
+      </line>
+      <rect x="238" y="66" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <text x="265" y="77" fill="#B91C1C" font-size="11" text-anchor="middle">git clone</text>
+
+      <line x1="232" y1="228" x2="296" y2="228"
+            stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur="1.2s" repeatCount="indefinite"/>
+      </line>
+      <rect x="238" y="214" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <text x="265" y="225" fill="#B91C1C" font-size="11" text-anchor="middle">git clone</text>
+
+      <line x1="232" y1="376" x2="296" y2="376"
+            stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur=".9s" repeatCount="indefinite"/>
+      </line>
+      <rect x="238" y="362" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <text x="265" y="373" fill="#B91C1C" font-size="11" text-anchor="middle">hostPath</text>
+
+      <!-- ── Column 3: PULSE_DIR RESOLVER (x:562–864, y:16–444) ── -->
+      <rect x="562" y="16" width="302" height="428" rx="10"
+            fill="#FFFBEB" stroke="#FCD34D" stroke-width="1.5"/>
+      <rect x="562" y="16" width="302" height="44" rx="10" fill="#FEF9C3"/>
+      <rect x="562" y="48" width="302" height="12" fill="#FEF9C3"/>
+      <text x="713" y="42" fill="#92400E" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".04em">PULSE_DIR RESOLVER</text>
+      <text x="713" y="70" fill="#78350F" font-size="11" text-anchor="middle">Embedded in all 6 Jenkinsfiles</text>
+
+      <!-- code block inside resolver -->
+      <rect x="578" y="84" width="270" height="224" rx="7" fill="#1E293B"/>
+      <text x="594" y="110" fill="#64748B" font-size="10" font-family="'Geist Mono',monospace"># post.failure block</text>
+      <text x="594" y="130" fill="#94A3B8" font-size="10.5" font-family="'Geist Mono',monospace">PULSE_DIR=""</text>
+      <text x="594" y="150" fill="#93C5FD" font-size="10.5" font-family="'Geist Mono',monospace">for</text>
+      <text x="622" y="150" fill="#E2E8F0" font-size="10.5" font-family="'Geist Mono',monospace">P in \</text>
+      <text x="594" y="168" fill="#86EFAC" font-size="10.5" font-family="'Geist Mono',monospace">  "$HOME/Documents/git/pulse"</text>
+      <text x="594" y="186" fill="#86EFAC" font-size="10.5" font-family="'Geist Mono',monospace">  "/home/dk/Documents/git/pulse"</text>
+      <text x="594" y="204" fill="#E2E8F0" font-size="10.5" font-family="'Geist Mono',monospace">do</text>
+      <text x="594" y="222" fill="#E2E8F0" font-size="10.5" font-family="'Geist Mono',monospace">  [ -f "$P/llm-analysis.sh" ] \</text>
+      <text x="594" y="240" fill="#E2E8F0" font-size="10.5" font-family="'Geist Mono',monospace">    &amp;&amp; PULSE_DIR="$P" &amp;&amp; break</text>
+      <text x="594" y="258" fill="#E2E8F0" font-size="10.5" font-family="'Geist Mono',monospace">done</text>
+      <text x="594" y="278" fill="#FCD34D" font-size="10.5" font-family="'Geist Mono',monospace">[ -z "$PULSE_DIR" ] &amp;&amp; exit 1</text>
+      <text x="594" y="298" fill="#475569" font-size="10" font-family="'Geist Mono',monospace" font-style="italic"># × 6 pipelines</text>
+
+      <!-- problems list -->
+      <rect x="578" y="320" width="270" height="108" rx="7"
+            fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
+      <text x="713" y="344" fill="#DC2626" font-size="11" font-weight="600" text-anchor="middle">Known failure modes</text>
+      <text x="594" y="364" fill="#B91C1C" font-size="10.5">→  Stale clone = wrong script version</text>
+      <text x="594" y="382" fill="#B91C1C" font-size="10.5">→  New agent = manual bootstrap</text>
+      <text x="594" y="400" fill="#B91C1C" font-size="10.5">→  No webhook, no auto-trigger</text>
+
+      <!-- ── Gap B connection lines (x:498–562) at y=80, 228, 376 ── -->
+      <line x1="498" y1="80" x2="562" y2="80"
+            stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
+        <animate attributeName="stroke-dashoffset" values="0;-14" dur=".8s" repeatCount="indefinite"/>
+      </line>
+      <rect x="504" y="66" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <text x="530" y="77" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
+
+      <line x1="498" y1="228" x2="562" y2="228"
+            stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
+        <animate attributeName="stroke-dashoffset" values="0;-14" dur="1s" repeatCount="indefinite"/>
+      </line>
+      <rect x="504" y="214" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <text x="530" y="225" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
+
+      <line x1="498" y1="376" x2="562" y2="376"
+            stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
+        <animate attributeName="stroke-dashoffset" values="0;-14" dur=".9s" repeatCount="indefinite"/>
+      </line>
+      <rect x="504" y="362" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <text x="530" y="373" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
+
+    </svg>
+  </div>
+
+  <div class="compare">
+    <div class="cbox before">
+      <h4>Without Gitea</h4>
+      <ul>
+        <li>Repo lives on one host only</li>
+        <li>Agents clone manually, once</li>
+        <li>No pull = stale scripts = silent failures</li>
+        <li>PULSE_DIR loop in all 6 Jenkinsfiles</li>
+        <li>New agent = manual bootstrap step</li>
+        <li>No webhook = no auto-trigger on push</li>
+      </ul>
+    </div>
+    <div class="cbox after">
+      <h4>With Gitea</h4>
+      <ul>
+        <li>Single HTTP URL for every agent</li>
+        <li>Clone fresh each build — always current</li>
+        <li>No drift, no stale scripts</li>
+        <li>PULSE_DIR resolver deleted from all pipelines</li>
+        <li>New agent just needs the URL and a token</li>
+        <li>Webhook fires Jenkins on every push</li>
+      </ul>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ══════════════════════════════ 2. WHAT IS GITEA ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">02 — The Tool</span>
+  <h2>Gitea — a 60 MB Git server</h2>
+  <p>
+    Gitea is a self-hosted Git service written in Go. The entire server is a single binary,
+    consumes <strong>60–80 MB of RAM</strong> at rest, and exposes a GitHub-compatible API.
+    It runs as a single Kubernetes pod backed by a 5Gi PVC.
+  </p>
+  <p>
+    Unlike GitLab — which requires multiple services and multi-gigabyte images —
+    Gitea uses SQLite on a small volume and handles a private team's repositories with
+    no noticeable resource footprint next to Jenkins.
+  </p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">~70<span style="font-size:16px;font-weight:500">MB</span></div>
+      <div class="stat-label">RAM at rest</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">1</div>
+      <div class="stat-label">Go binary</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">5<span style="font-size:16px;font-weight:500">Gi</span></div>
+      <div class="stat-label">PVC storage</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">&lt;1<span style="font-size:16px;font-weight:500">ms</span></div>
+      <div class="stat-label">webhook latency</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ══════════════════════════════ 3. THE ARCHITECTURE ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">03 — The Architecture</span>
+  <h2>Every node connected through Tailscale</h2>
+  <p>
+    Gitea runs inside the existing Kubernetes cluster on the cylon host.
+    It gets a <strong>ClusterIP service</strong> for Jenkins (same cluster, no network hop)
+    and a <strong>NodePort 30300</strong> for everything outside — Mac Mini agents,
+    developer laptops — all reachable through the existing Tailscale mesh at
+    <code>100.89.50.27:30300</code>.
+  </p>
+
+  <!--
+    SVG 2 — ARCHITECTURE   viewBox="0 0 880 556"
+    ───────────────────────────────────────────────────────────────────
+    Developer:    rect(16,  16,  204, 96)   center-x=118, bottom=112
+    K8s outer:    rect(240, 16,  624, 284)  x:240–864, y:16–300
+      cylon label @ y=36
+      K8s inner:  rect(258, 46, 588, 240)   x:258–846, y:46–286
+      Gitea:      rect(272, 64, 186, 208)   center-x=365, bottom=272
+      Jenkins:    rect(474, 64, 186, 208)   center-x=567, bottom=272
+      Android:    rect(676, 64, 168, 208)   center-x=760, bottom=272
+    Tailscale bar:rect(0,  320, 880, 52)    y:320–372
+    Mac Mini M3:  rect(16,  390, 220, 152)  center-x=126, top=390
+    ios-agent:    rect(254, 390, 220, 152)  center-x=364, top=390
+    ───────────────────────────────────────────────────────────────────
+    Vertical lines (pass through gaps between rows):
+      Dev:     x=118, y=112 → y=320  (gap y:112–320)
+      Gitea:   x=365, y=272 → y=320  (gap y:272–320, crosses K8s borders)
+      Jenkins: x=567, y=272 → y=320
+      Android: x=760, y=272 → y=320
+      Mac:     x=126, y=372 → y=390  (gap y:372–390)
+      ios:     x=364, y=372 → y=390
+    ───────────────────────────────────────────────────────────────────
+  -->
+  <div class="diagram-card fade">
+    <div class="diagram-label">fig. 2 — gitea in kubernetes: nodes, pods and tailscale connections</div>
+    <svg viewBox="0 0 880 556" xmlns="http://www.w3.org/2000/svg"
+         style="font-family:'Geist',system-ui,sans-serif;">
+      <rect width="880" height="556" fill="#F9FAFB"/>
+
+      <!-- ── Developer box (x:16–220, y:16–112) ── -->
+      <rect x="16" y="16" width="204" height="96" rx="8"
+            fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+      <rect x="16" y="16" width="204" height="32" rx="8" fill="#F9FAFB"/>
+      <rect x="16" y="36" width="204" height="12" fill="#F9FAFB"/>
+      <text x="118" y="35" fill="#111827" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".04em">DEVELOPER</text>
+      <text x="118" y="60" fill="#4B5563" font-size="11" text-anchor="middle">anywhere on Tailscale</text>
+      <rect x="28" y="68" width="180" height="32" rx="5"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="118" y="82" fill="#1D4ED8" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">$ git push origin master</text>
+      <text x="118" y="95" fill="#3B82F6" font-size="10" text-anchor="middle"
+            font-family="'Geist Mono',monospace">→ Gitea at :30300</text>
+
+      <!-- ── Cylon outer dashed boundary (x:240–864, y:16–300) ── -->
+      <rect x="240" y="16" width="624" height="284" rx="10"
+            fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="6 4"/>
+      <text x="258" y="34" fill="#9CA3AF" font-size="10" letter-spacing=".06em"
+            font-family="'Geist Mono',monospace">CYLON HOST · 192.168.1.10</text>
+
+      <!-- ── Kubernetes inner boundary (x:258–846, y:46–286) ── -->
+      <rect x="258" y="46" width="588" height="240" rx="8"
+            fill="#F5F3FF" stroke="#C4B5FD" stroke-width="1.2"/>
+      <text x="276" y="62" fill="#7C3AED" font-size="10" letter-spacing=".06em"
+            font-family="'Geist Mono',monospace">KUBERNETES CLUSTER</text>
+
+      <!-- ── Gitea pod (x:272–458, y:64–272, center-x=365) ── -->
+      <rect x="272" y="72" width="186" height="206" rx="8"
+            fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+      <rect x="272" y="72" width="186" height="34" rx="8" fill="#DBEAFE"/>
+      <rect x="272" y="94" width="186" height="12" fill="#DBEAFE"/>
+      <text x="365" y="92" fill="#1D4ED8" font-size="13" font-weight="600"
+            text-anchor="middle">GITEA</text>
+      <text x="365" y="120" fill="#1D4ED8" font-size="11" text-anchor="middle">port 3000 (ClusterIP)</text>
+      <text x="365" y="138" fill="#4B5563" font-size="11" text-anchor="middle">NodePort 30300</text>
+      <text x="365" y="156" fill="#4B5563" font-size="11" text-anchor="middle">SQLite on 5Gi PVC</text>
+      <rect x="286" y="168" width="158" height="48" rx="5"
+            fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="365" y="185" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">100.89.50.27:30300</text>
+      <text x="365" y="202" fill="#4B5563" font-size="10" text-anchor="middle">all agents use this URL</text>
+      <rect x="286" y="222" width="158" height="44" rx="5"
+            fill="#DBEAFE" stroke="#93C5FD" stroke-width="1"/>
+      <text x="365" y="239" fill="#1D4ED8" font-size="10" text-anchor="middle">webhook → Jenkins</text>
+      <text x="365" y="256" fill="#4B5563" font-size="10" text-anchor="middle">(ClusterIP, internal)</text>
+
+      <!-- ── Jenkins pod (x:474–660, y:64–272, center-x=567) ── -->
+      <rect x="474" y="72" width="186" height="206" rx="8"
+            fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+      <rect x="474" y="72" width="186" height="34" rx="8" fill="#FFEDD5"/>
+      <rect x="474" y="94" width="186" height="12" fill="#FFEDD5"/>
+      <text x="567" y="92" fill="#C2410C" font-size="13" font-weight="600"
+            text-anchor="middle">JENKINS</text>
+      <text x="567" y="120" fill="#C2410C" font-size="11" text-anchor="middle">NodePort 30881</text>
+      <text x="567" y="138" fill="#4B5563" font-size="11" text-anchor="middle">receives Gitea webhook</text>
+      <text x="567" y="156" fill="#4B5563" font-size="11" text-anchor="middle">dispatches to agents</text>
+      <rect x="488" y="168" width="158" height="48" rx="5"
+            fill="#FFFFFF" stroke="#FED7AA" stroke-width="1"/>
+      <text x="567" y="185" fill="#92400E" font-size="10.5" text-anchor="middle">&lt;— webhook on push</text>
+      <text x="567" y="202" fill="#4B5563" font-size="10" text-anchor="middle">sub-ms from Gitea</text>
+      <rect x="488" y="222" width="158" height="44" rx="5"
+            fill="#FFEDD5" stroke="#FED7AA" stroke-width="1"/>
+      <text x="567" y="239" fill="#C2410C" font-size="10" text-anchor="middle">triggers iOS + Android</text>
+      <text x="567" y="256" fill="#4B5563" font-size="10" text-anchor="middle">pipelines in parallel</text>
+
+      <!-- ── Android pod (x:676–844, y:64–272, center-x=760) ── -->
+      <rect x="676" y="72" width="168" height="206" rx="8"
+            fill="#F0FDF4" stroke="#86EFAC" stroke-width="1.5"/>
+      <rect x="676" y="72" width="168" height="34" rx="8" fill="#DCFCE7"/>
+      <rect x="676" y="94" width="168" height="12" fill="#DCFCE7"/>
+      <text x="760" y="92" fill="#15803D" font-size="12" font-weight="600"
+            text-anchor="middle">ANDROID</text>
+      <text x="760" y="120" fill="#15803D" font-size="11" text-anchor="middle">build-agent pod</text>
+      <text x="760" y="138" fill="#4B5563" font-size="11" text-anchor="middle">clones pulse via</text>
+      <text x="760" y="154" fill="#4B5563" font-size="11" text-anchor="middle">ClusterIP (internal)</text>
+      <rect x="690" y="166" width="140" height="48" rx="5"
+            fill="#FFFFFF" stroke="#86EFAC" stroke-width="1"/>
+      <text x="760" y="183" fill="#15803D" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">git clone</text>
+      <text x="760" y="199" fill="#4B5563" font-size="10" text-anchor="middle">gitea-svc:3000/dk/pulse</text>
+      <rect x="690" y="220" width="140" height="44" rx="5"
+            fill="#DCFCE7" stroke="#86EFAC" stroke-width="1"/>
+      <text x="760" y="237" fill="#15803D" font-size="10" text-anchor="middle">no Tailscale needed</text>
+      <text x="760" y="252" fill="#4B5563" font-size="10" text-anchor="middle">same cluster = fast</text>
+
+      <!-- ── Tailscale bar (y:320–372) ── -->
+      <rect x="0" y="320" width="880" height="52" fill="#F5F3FF"/>
+      <line x1="0" y1="320" x2="880" y2="320" stroke="#C4B5FD" stroke-width="1.2"/>
+      <line x1="0" y1="372" x2="880" y2="372" stroke="#C4B5FD" stroke-width="1.2"/>
+      <text x="440" y="342" fill="#6D28D9" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".05em">TAILSCALE MESH VPN</text>
+      <text x="440" y="361" fill="#7C3AED" font-size="11" text-anchor="middle">
+        developer · cylon-host (100.89.50.27) · mobileapp-m3 · ios-agent (100.104.14.62) — all peers on Tailscale
+</text>
+
+      <!-- ── Mac Mini M3 (x:212–432, y:390–542, center-x=322) — centered ── -->
+      <rect x="212" y="390" width="220" height="152" rx="8"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.5"/>
+      <rect x="212" y="390" width="220" height="34" rx="8" fill="#F0F9FF"/>
+      <rect x="212" y="412" width="220" height="12" fill="#F0F9FF"/>
+      <text x="322" y="410" fill="#0369A1" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".03em">MOBILEAPP-M3</text>
+      <text x="322" y="437" fill="#4B5563" font-size="11" text-anchor="middle">Mac Mini M3 · ios-agent label</text>
+      <text x="322" y="453" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">via Tailscale mesh</text>
+      <rect x="224" y="463" width="196" height="66" rx="5"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="322" y="480" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">git clone --depth 1 \</text>
+      <text x="322" y="496" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  http://100.89.50.27:30300</text>
+      <text x="322" y="512" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  /dk/pulse</text>
+
+      <!-- ── ios-agent (x:448–668, y:390–542, center-x=558) — centered ── -->
+      <rect x="448" y="390" width="220" height="152" rx="8"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.5"/>
+      <rect x="448" y="390" width="220" height="34" rx="8" fill="#F0F9FF"/>
+      <rect x="448" y="412" width="220" height="12" fill="#F0F9FF"/>
+      <text x="558" y="410" fill="#0369A1" font-size="12" font-weight="600"
+            text-anchor="middle" letter-spacing=".03em">IOS-AGENT</text>
+      <text x="558" y="437" fill="#4B5563" font-size="11" text-anchor="middle">Mac Mini · ios-agent label</text>
+      <text x="558" y="453" fill="#6B7280" font-size="11" text-anchor="middle"
+            font-family="'Geist Mono',monospace">Tailscale: 100.104.14.62</text>
+      <rect x="460" y="463" width="196" height="66" rx="5"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="558" y="480" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">git clone --depth 1 \</text>
+      <text x="558" y="496" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  http://100.89.50.27:30300</text>
+      <text x="558" y="512" fill="#1E40AF" font-size="10.5" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  /dk/pulse</text>
+
+      <!-- ── Vertical connector lines ── -->
+      <!-- Dev → Tailscale  x=118, y=112→320 -->
+      <line x1="118" y1="112" x2="118" y2="320" stroke="#6D28D9" stroke-width="1.2"
+            stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur="1.1s" repeatCount="indefinite"/>
+      </line>
+      <circle cx="118" cy="112" r="3.5" fill="#6D28D9"/>
+      <circle cx="118" cy="320" r="3.5" fill="#6D28D9"/>
+
+      <!-- Gitea → Tailscale  x=365, y=278→320 -->
+      <line x1="365" y1="278" x2="365" y2="320" stroke="#1D4ED8" stroke-width="1.2"
+            stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur=".9s" repeatCount="indefinite"/>
+      </line>
+      <circle cx="365" cy="278" r="3.5" fill="#1D4ED8"/>
+      <circle cx="365" cy="320" r="3.5" fill="#1D4ED8"/>
+
+      <!-- Jenkins → Tailscale  x=567 -->
+      <line x1="567" y1="278" x2="567" y2="320" stroke="#C2410C" stroke-width="1.2"
+            stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur="1.2s" repeatCount="indefinite"/>
+      </line>
+      <circle cx="567" cy="278" r="3.5" fill="#C2410C"/>
+      <circle cx="567" cy="320" r="3.5" fill="#C2410C"/>
+
+      <!-- Android → Tailscale  x=760 -->
+      <line x1="760" y1="278" x2="760" y2="320" stroke="#15803D" stroke-width="1.2"
+            stroke-dasharray="5 3">
+        <animate attributeName="stroke-dashoffset" values="0;-16" dur="1s" repeatCount="indefinite"/>
+      </line>
+      <circle cx="760" cy="278" r="3.5" fill="#15803D"/>
+      <circle cx="760" cy="320" r="3.5" fill="#15803D"/>
+
+      <!-- Tailscale → Mac Mini  x=322, y=372→390 -->
+      <line x1="322" y1="372" x2="322" y2="390" stroke="#0369A1" stroke-width="1.5"/>
+      <circle cx="322" cy="372" r="3.5" fill="#0369A1"/>
+      <circle cx="322" cy="390" r="3.5" fill="#0369A1"/>
+
+      <!-- Tailscale → ios-agent  x=558, y=372→390 -->
+      <line x1="558" y1="372" x2="558" y2="390" stroke="#0369A1" stroke-width="1.5"/>
+      <circle cx="558" cy="372" r="3.5" fill="#0369A1"/>
+      <circle cx="558" cy="390" r="3.5" fill="#0369A1"/>
+
+      <!-- Animated packets on Dev→Tailscale -->
+      <circle r="4" fill="#6D28D9" opacity="0">
+        <animate attributeName="cy" values="112;320" dur="1.5s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="cx" values="118;118" dur="1.5s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur="1.5s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+      <!-- packet Mac→Tailscale (upward) -->
+      <circle r="4" fill="#0369A1" opacity="0">
+        <animate attributeName="cy" values="390;372" dur=".6s" repeatCount="indefinite" begin=".4s"/>
+        <animate attributeName="cx" values="322;322" dur=".6s" repeatCount="indefinite" begin=".4s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".6s" repeatCount="indefinite" begin=".4s"/>
+      </circle>
+      <!-- packet ios→Tailscale (upward) -->
+      <circle r="4" fill="#0369A1" opacity="0">
+        <animate attributeName="cy" values="390;372" dur=".6s" repeatCount="indefinite" begin=".8s"/>
+        <animate attributeName="cx" values="558;558" dur=".6s" repeatCount="indefinite" begin=".8s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".6s" repeatCount="indefinite" begin=".8s"/>
+      </circle>
+    </svg>
+  </div>
+
+  <p>
+    The Mac Mini agents never touch cylon's filesystem. They talk to Gitea's HTTP endpoint —
+    the same URL, always available, always at the latest commit. Jenkins uses Gitea's
+    webhook to start builds the moment a push lands.
+  </p>
+</div>
+</section>
+
+<!-- ══════════════════════════════ 4. THE FLOW ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">04 — The Flow</span>
+  <h2>One push, full pipeline</h2>
+  <p>
+    Once Gitea is running, the developer experience reduces to a single gesture: <code>git push</code>.
+    Everything downstream is automatic and deterministic.
+  </p>
+
+  <!--
+    SVG 3 — FLOW   viewBox="0 0 880 284"
+    ───────────────────────────────────────────────────────────────────
+    5 boxes: w=148, h=152, y=20
+    4 arrows: 36px each
+    Total: 5×148 + 4×36 = 740 + 144 = 884 → too wide by 4px
+    Use w=146, arrows=36: 5×146 + 4×36 = 730+144 = 874, margin=3px each side
+    Or: w=144, arrows=40: 5×144 + 4×40 = 720+160 = 880 exactly
+    Left margin: 0 (boxes start at x=0? no, add 4px)
+    Use margin=2: x positions: 2, 190, 378, 566, 754   arrows: 146–190, 334–378, 522–566, 710–754
+
+    Step numbers at y=184
+    Timeline at y=204
+    Time labels at y=222
+    Total height: 284
+    ───────────────────────────────────────────────────────────────────
+  -->
+  <div class="diagram-card fade">
+    <div class="diagram-label">fig. 3 — git push to build artifact · end-to-end sequence</div>
+    <svg viewBox="0 0 880 280" xmlns="http://www.w3.org/2000/svg"
+         style="font-family:'Geist',system-ui,sans-serif;">
+      <rect width="880" height="280" fill="#F9FAFB"/>
+
+      <!-- Arrow marker -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#9CA3AF"/>
+        </marker>
+      </defs>
+
+      <!--
+        5 equal boxes: w=140, h=148, y=16
+        4 equal arrows: 38px gaps
+        Total: 5×140 + 4×38 = 700+152 = 852  left margin = (880-852)/2 = 14
+        Box x: 14, 192, 370, 548, 726
+        Arrow spans: 154-192, 332-370, 510-548, 688-726
+        Arrow midpoints: 173, 351, 529, 707
+        All arrows at mid-box y = 16+74 = 90
+      -->
+
+      <!-- ── Box 1: Developer (x:14–154) ── -->
+      <rect x="14" y="16" width="140" height="148" rx="8"
+            fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+      <rect x="14" y="16" width="140" height="32" rx="8" fill="#F9FAFB"/>
+      <rect x="14" y="36" width="140" height="12" fill="#F9FAFB"/>
+      <text x="84" y="35" fill="#111827" font-size="11" font-weight="600"
+            text-anchor="middle" letter-spacing=".04em">DEVELOPER</text>
+      <text x="84" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">runs git push</text>
+      <text x="84" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">to Gitea remote</text>
+      <rect x="24" y="88" width="120" height="44" rx="5"
+            fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="84" y="106" fill="#1D4ED8" font-size="10" text-anchor="middle"
+            font-family="'Geist Mono',monospace">$ git push</text>
+      <text x="84" y="121" fill="#1D4ED8" font-size="10" text-anchor="middle"
+            font-family="'Geist Mono',monospace">  gitea master</text>
+      <text x="84" y="145" fill="#6B7280" font-size="10" text-anchor="middle">any Tailscale node</text>
+      <text x="84" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">①</text>
+
+      <!-- Arrow 1 (154→192) -->
+      <line x1="155" y1="90" x2="190" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="156" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="173" y="87" fill="#6B7280" font-size="11" text-anchor="middle">HTTPS</text>
+      <circle r="4" fill="#6D28D9" opacity="0">
+        <animate attributeName="cx" values="155;190" dur=".7s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+
+      <!-- ── Box 2: Gitea (x:192–332) ── -->
+      <rect x="192" y="16" width="140" height="148" rx="8"
+            fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+      <rect x="192" y="16" width="140" height="32" rx="8" fill="#DBEAFE"/>
+      <rect x="192" y="36" width="140" height="12" fill="#DBEAFE"/>
+      <text x="262" y="35" fill="#1D4ED8" font-size="11" font-weight="600"
+            text-anchor="middle">GITEA</text>
+      <text x="262" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">stores commit</text>
+      <text x="262" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">fires webhook</text>
+      <rect x="202" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="262" y="106" fill="#1E40AF" font-size="10.5" text-anchor="middle">t ≈ 0.1 s</text>
+      <text x="262" y="121" fill="#4B5563" font-size="10" text-anchor="middle">after git push</text>
+      <text x="262" y="145" fill="#4B5563" font-size="10" text-anchor="middle">POST → Jenkins :8080</text>
+      <text x="262" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">②</text>
+
+      <!-- Arrow 2 (332→370) -->
+      <line x1="333" y1="90" x2="368" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="334" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="351" y="87" fill="#6B7280" font-size="11" text-anchor="middle">webhook</text>
+      <circle r="4" fill="#1D4ED8" opacity="0">
+        <animate attributeName="cx" values="333;368" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".3s"/>
+      </circle>
+
+      <!-- ── Box 3: Jenkins (x:370–510) ── -->
+      <rect x="370" y="16" width="140" height="148" rx="8"
+            fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+      <rect x="370" y="16" width="140" height="32" rx="8" fill="#FFEDD5"/>
+      <rect x="370" y="36" width="140" height="12" fill="#FFEDD5"/>
+      <text x="440" y="35" fill="#C2410C" font-size="11" font-weight="600"
+            text-anchor="middle">JENKINS</text>
+      <text x="440" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">receives webhook</text>
+      <text x="440" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">triggers pipeline</text>
+      <rect x="380" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#FED7AA" stroke-width="1"/>
+      <text x="440" y="106" fill="#92400E" font-size="10.5" text-anchor="middle">t ≈ 0.3 s</text>
+      <text x="440" y="121" fill="#4B5563" font-size="10" text-anchor="middle">dispatches stages</text>
+      <text x="440" y="145" fill="#4B5563" font-size="10" text-anchor="middle">to build agents</text>
+      <text x="440" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">③</text>
+
+      <!-- Arrow 3 (510→548) -->
+      <line x1="511" y1="90" x2="546" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="512" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="529" y="87" fill="#6B7280" font-size="11" text-anchor="middle">dispatch</text>
+      <circle r="4" fill="#C2410C" opacity="0">
+        <animate attributeName="cx" values="511;546" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".6s"/>
+      </circle>
+
+      <!-- ── Box 4: Mac Mini (x:548–688) ── -->
+      <rect x="548" y="16" width="140" height="148" rx="8"
+            fill="#F0F9FF" stroke="#7DD3FC" stroke-width="1.5"/>
+      <rect x="548" y="16" width="140" height="32" rx="8" fill="#E0F2FE"/>
+      <rect x="548" y="36" width="140" height="12" fill="#E0F2FE"/>
+      <text x="618" y="35" fill="#0369A1" font-size="11" font-weight="600"
+            text-anchor="middle">MAC MINI</text>
+      <text x="618" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">git clone pulse</text>
+      <text x="618" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">from Gitea URL</text>
+      <rect x="558" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1"/>
+      <text x="618" y="106" fill="#0369A1" font-size="10.5" text-anchor="middle">always latest</text>
+      <text x="618" y="121" fill="#4B5563" font-size="10" text-anchor="middle">xcodebuild / fastlane</text>
+      <text x="618" y="145" fill="#4B5563" font-size="10" text-anchor="middle">LLM on failure</text>
+      <text x="618" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">④</text>
+
+      <!-- Arrow 4 (688→726) -->
+      <line x1="689" y1="90" x2="724" y2="90" stroke="#D1D5DB" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="690" y="77" width="34" height="12" rx="3" fill="#F3F4F6"/>
+      <text x="707" y="87" fill="#6B7280" font-size="11" text-anchor="middle">output</text>
+      <circle r="4" fill="#0369A1" opacity="0">
+        <animate attributeName="cx" values="689;724" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+        <animate attributeName="cy" values="90;90" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+        <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.9;1" dur=".7s" repeatCount="indefinite" begin=".9s"/>
+      </circle>
+
+      <!-- ── Box 5: Build Ready (x:726–866, w=140) ── -->
+      <rect x="726" y="16" width="140" height="148" rx="8"
+            fill="#F0FDF4" stroke="#86EFAC" stroke-width="1.5"/>
+      <rect x="726" y="16" width="140" height="32" rx="8" fill="#DCFCE7"/>
+      <rect x="726" y="36" width="140" height="12" fill="#DCFCE7"/>
+      <text x="796" y="35" fill="#15803D" font-size="11" font-weight="600"
+            text-anchor="middle">BUILD READY</text>
+      <text x="796" y="62" fill="#4B5563" font-size="10.5" text-anchor="middle">.ipa / .apk built</text>
+      <text x="796" y="77" fill="#4B5563" font-size="10.5" text-anchor="middle">LLM report done</text>
+      <rect x="736" y="88" width="120" height="44" rx="5"
+            fill="#FFFFFF" stroke="#86EFAC" stroke-width="1"/>
+      <text x="796" y="106" fill="#15803D" font-size="10.5" text-anchor="middle">email sent</text>
+      <text x="796" y="121" fill="#4B5563" font-size="10" text-anchor="middle">Nexus + JFrog upload</text>
+      <text x="796" y="145" fill="#4B5563" font-size="10" text-anchor="middle">archived in Jenkins</text>
+      <text x="796" y="190" fill="#6D28D9" font-size="20" font-weight="700" text-anchor="middle">⑤</text>
+
+      <!-- Timeline bar -->
+      <rect x="14" y="206" width="852" height="2" rx="1" fill="#E5E7EB"/>
+      <rect x="14" y="206" width="0" height="2" rx="1" fill="#6D28D9">
+        <animate attributeName="width" values="0;852" dur="3.5s" repeatCount="indefinite"/>
+      </rect>
+
+      <!-- Time labels below timeline -->
+      <text x="84"  y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t = 0 s</text>
+      <text x="262" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 0.1 s</text>
+      <text x="440" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 0.3 s</text>
+      <text x="618" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">t ≈ 5–30 s</text>
+      <text x="796" y="226" fill="#9CA3AF" font-size="10" text-anchor="middle">build duration</text>
+
+    </svg>
+    <div class="svg-legend">
+      <div class="svg-legend-item">
+        <div class="svg-legend-dot" style="background:#6D28D9"></div>
+        animated dots show live data flow between components
+      </div>
+      <div class="svg-legend-item">
+        <div class="svg-legend-dot" style="background:#1D4ED8"></div>
+        webhook &amp; git traffic
+      </div>
+      <div class="svg-legend-item">
+        <div class="svg-legend-dot" style="background:#0369A1"></div>
+        build agent traffic
+      </div>
+      <div class="svg-legend-item" style="margin-left:auto">
+        <span style="color:#6D28D9;font-weight:600">①②③④⑤</span>&nbsp;sequence steps
+      </div>
+    </div>
+  </div>
+
+  <ol class="steps">
+    <li>
+      <span class="snum">①</span>
+      <div class="stext">
+        <strong>Developer pushes to Gitea</strong>
+        <p>Standard <code>git push origin master</code> to the Gitea remote.
+        Gitea stores the commit and immediately fires the configured webhook.</p>
+      </div>
+    </li>
+    <li>
+      <span class="snum">②</span>
+      <div class="stext">
+        <strong>Gitea fires the webhook</strong>
+        <p>An HTTP POST hits Jenkins at <code>jenkins-svc:8080/github-webhook/</code> — same cluster,
+        sub-millisecond. No polling, no timer.</p>
+      </div>
+    </li>
+    <li>
+      <span class="snum">③</span>
+      <div class="stext">
+        <strong>Jenkins triggers the pipeline</strong>
+        <p>The pipeline job starts and dispatches stages — Mac Mini for iOS builds,
+        cylon pod for Android and DevSecOps.</p>
+      </div>
+    </li>
+    <li>
+      <span class="snum">④</span>
+      <div class="stext">
+        <strong>Agents clone pulse from Gitea</strong>
+        <p>Instead of the PULSE_DIR resolver, every agent uses
+        <code>http://100.89.50.27:30300/dk/pulse</code>.
+        Always current. <code>--depth 1</code> keeps it fast.</p>
+      </div>
+    </li>
+    <li>
+      <span class="snum">⑤</span>
+      <div class="stext">
+        <strong>Build runs, artifacts produced</strong>
+        <p>IPA or APK archived, LLM analysis runs, failure or success email sent.
+        Pipeline logic is identical to today — only script-sourcing changed.</p>
+      </div>
+    </li>
+  </ol>
+</div>
+</section>
+
+<!-- ══════════════════════════════ 5. DEPLOYMENT ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">05 — Deployment</span>
+  <h2>Up in under ten minutes</h2>
+
+  <div class="code-wrap">
+    <div class="code-header">step 1 — add the helm repo</div>
+<pre><span class="kw">helm</span> repo add gitea-charts https://dl.gitea.com/charts/
+<span class="kw">helm</span> repo update</pre>
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">step 2 — gitea-values.yaml</div>
+<pre><span class="cm"># Minimal config for a private single-team setup</span>
+<span class="kw">gitea</span>:
+  admin:
+    username: <span class="str">dk</span>
+    password:  <span class="str">"changeme-on-first-login"</span>
+    email:     <span class="str">"dk@pulse.local"</span>
+
+<span class="kw">service</span>:
+  http:
+    type:     NodePort
+    port:     <span class="num">3000</span>
+    nodePort: <span class="num">30300</span>   <span class="cm"># reachable at 100.89.50.27:30300 via Tailscale</span>
+
+<span class="kw">persistence</span>:
+  enabled:      true
+  size:         <span class="str">"5Gi"</span>
+  storageClass: <span class="str">"standard"</span>
+
+<span class="kw">resources</span>:
+  requests: { memory: <span class="str">"128Mi"</span>, cpu: <span class="str">"100m"</span> }
+  limits:   { memory: <span class="str">"256Mi"</span>, cpu: <span class="str">"500m"</span> }
+
+<span class="kw">postgresql</span>:    { enabled: false }   <span class="cm"># use SQLite — fine for a small team</span>
+<span class="kw">postgresql-ha</span>: { enabled: false }</pre>
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">step 3 — install</div>
+<pre><span class="kw">helm</span> install gitea gitea-charts/gitea \
+  --namespace utilities \
+  --create-namespace \
+  --values gitea-values.yaml
+
+<span class="kw">kubectl</span> rollout status deployment/gitea -n utilities</pre>
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">step 4 — push the pulse repo</div>
+<pre><span class="cm"># Create repo via API</span>
+<span class="kw">curl</span> -s -u dk:changeme-on-first-login \
+     -X POST http://100.89.50.27:30300/api/v1/user/repos \
+     -H "Content-Type: application/json" \
+     -d '{"name":"pulse","private":true}'
+
+<span class="kw">cd</span> ~/Documents/git/pulse
+<span class="kw">git</span> remote add gitea http://dk:token@100.89.50.27:30300/dk/pulse.git
+<span class="kw">git</span> push gitea master</pre>
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">step 5 — configure webhook in gitea</div>
+<pre><span class="cm"># Settings → Webhooks → Add Webhook → Gitea</span>
+<span class="cm"># Target URL (ClusterIP, internal):</span>
+http://jenkins.utilities.svc.cluster.local:8080/github-webhook/
+
+<span class="cm"># Trigger on: Push events</span></pre>
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">step 6 — replace pulse_dir resolver in jenkinsfiles</div>
+<pre><span class="cm"># Replace the resolver loop with a single git clone</span>
+<span class="kw">git</span> clone http://dk:token@100.89.50.27:30300/dk/pulse.git \
+    --depth 1 --single-branch --branch master \
+    /tmp/pulse-$$
+
+<span class="kw">bash</span> /tmp/pulse-$$/jenkins-k8s/shared/llm-analysis.sh
+
+<span class="cm"># No PULSE_DIR loop. No stale clone. No manual sync.</span></pre>
+  </div>
+</div>
+</section>
+
+<!-- ══════════════════════════════ 6. AFTER ══════════════════════════════ -->
+<section class="fade">
+<div class="wrap">
+  <span class="sec-num">06 — After</span>
+  <h2>What changes, what stays the same</h2>
+  <p>
+    The six Jenkins pipelines don't change structurally. The stages, email logic,
+    LLM analysis — all stay identical. The only change is how agents find the shared scripts:
+    <strong>from a fragile filesystem path to a stable HTTP URL.</strong>
+  </p>
+  <p>
+    New agents are trivial to onboard. Give them the Gitea URL and a read token.
+    They clone on demand, always getting the latest version. The PULSE_DIR loop
+    disappears from every pipeline.
+  </p>
+  <div class="callout">
+    Gitea is not a migration. It is a namespace declaration — a statement that this repository
+    has an authoritative address on your network, and everything that needs it knows where to find it.
+  </div>
+</div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div style="font-size:18px;margin-bottom:8px">⎈</div>
+    <div>pulse / jenkins-k8s &nbsp;·&nbsp; infrastructure notes &nbsp;·&nbsp; 2026</div>
+    <div style="margin-top:6px;font-size:11px;opacity:.6">Gitea · Kubernetes · Jenkins · Tailscale · Mac Mini M3</div>
+  </div>
+</footer>
+
+<script>
+const io = new IntersectionObserver(
+  entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }),
+  { threshold: 0.12 }
+);
+document.querySelectorAll('.fade').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
