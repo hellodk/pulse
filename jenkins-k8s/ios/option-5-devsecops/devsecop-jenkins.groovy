@@ -475,106 +475,322 @@ echo "────────────────────────�
             steps {
 
                 sh '''#!/bin/bash
-APPROVE_URL="${BUILD_URL}input/deploy-approval/proceedEmpty"
-ABORT_URL="${BUILD_URL}input/deploy-approval/abort"
+APPROVE_URL="../input/deploy-approval/proceedEmpty"
+ABORT_URL="../input/deploy-approval/abort"
 
 cat > ${PREVIEW_DIR}/index.html <<HTMLEOF
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Release Preview &mdash; ${VERSION}</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:-apple-system,Arial,sans-serif;background:#0d1117;color:#c9d1d9;}
-    .header{background:linear-gradient(135deg,#1f6feb,#388bfd);padding:24px 32px;}
-    .header h1{font-size:22px;color:#fff;font-weight:700;}
-    .header p{margin-top:6px;font-size:13px;color:rgba(255,255,255,.8);}
-    .container{max-width:1100px;margin:0 auto;padding:24px 32px;}
-    .approval{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px 24px;margin-bottom:24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
-    .approval p{flex:1;font-size:14px;color:#8b949e;min-width:200px;}
-    .btn{display:inline-block;padding:10px 28px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:700;}
-    .approve{background:#238636;color:#fff;}
-    .abort{background:#b62324;color:#fff;}
-    .card{background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:18px;overflow:hidden;}
-    .card-hdr{padding:13px 20px;border-bottom:1px solid #30363d;font-size:14px;font-weight:600;color:#f0f6fc;}
-    .card-body{padding:16px 20px;}
-    .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;}
-    .meta-item{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:12px 16px;}
-    .meta-item label{display:block;font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
-    .meta-item span{font-size:15px;font-weight:600;color:#f0f6fc;}
-    table{width:100%;border-collapse:collapse;font-size:13px;}
-    th{background:#21262d;color:#8b949e;padding:9px 12px;text-align:left;font-weight:500;}
-    td{padding:9px 12px;border-bottom:1px solid #21262d;color:#c9d1d9;}
-    tr:last-child td{border-bottom:none;}
-    pre{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-size:12px;line-height:1.6;overflow:auto;white-space:pre-wrap;word-break:break-all;max-height:420px;}
-    code{background:#21262d;padding:2px 6px;border-radius:4px;font-size:12px;font-family:monospace;}
-    .ftr{text-align:center;padding:28px 0 16px;font-size:11px;color:#484f58;}
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: #F9FAFB;
+      color: #111827;
+      min-height: 100vh;
+    }
+
+    /* ── Sticky Header ─────────────────────────────────────────────── */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: #FFFFFF;
+      border-bottom: 1px solid #E5E7EB;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+    .header-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .header-left { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+    .header-title { font-size: 18px; font-weight: 700; color: #111827; white-space: nowrap; }
+    .pill {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #E5E7EB;
+      background: #F3F4F6;
+      color: #4B5563;
+      white-space: nowrap;
+    }
+    .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .btn-approve, .btn-abort {
+      display: inline-block;
+      padding: 10px 22px;
+      border-radius: 7px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .btn-approve { background: #16A34A; color: #FFFFFF; }
+    .btn-approve:hover { background: #15803D; }
+    .btn-abort   { background: #DC2626; color: #FFFFFF; }
+    .btn-abort:hover   { background: #B91C1C; }
+    .header-note {
+      font-size: 11px;
+      color: #92400E;
+      background: #FFFBEB;
+      border: 1px solid #FCD34D;
+      border-radius: 6px;
+      padding: 5px 10px;
+      white-space: nowrap;
+    }
+
+    /* ── Build Info Strip ──────────────────────────────────────────── */
+    .build-strip {
+      background: #FFFFFF;
+      border-bottom: 1px solid #E5E7EB;
+    }
+    .build-strip-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 12px 28px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .stat-pill {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      background: #F9FAFB;
+      border: 1px solid #E5E7EB;
+      border-radius: 8px;
+      padding: 8px 16px;
+    }
+    .stat-pill .sp-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #4B5563;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .stat-pill .sp-value {
+      font-size: 14px;
+      font-weight: 700;
+      color: #111827;
+      font-family: 'SFMono-Regular', 'Consolas', monospace;
+    }
+
+    /* ── Main content ──────────────────────────────────────────────── */
+    .page-body {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 28px 28px 48px;
+    }
+
+    /* ── Collapsible sections ──────────────────────────────────────── */
+    details {
+      background: #FFFFFF;
+      border: 1px solid #E5E7EB;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+      overflow: hidden;
+    }
+    summary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #111827;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      content: '▸';
+      margin-left: auto;
+      font-size: 12px;
+      color: #6B7280;
+      transition: transform .18s;
+    }
+    details[open] > summary::after { transform: rotate(90deg); }
+    summary:hover { background: #F9FAFB; }
+    .section-body { padding: 0 20px 20px; }
+
+    /* ── Data table ────────────────────────────────────────────────── */
+    .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .data-table th {
+      background: #F3F4F6;
+      color: #4B5563;
+      padding: 9px 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 1px solid #E5E7EB;
+    }
+    .data-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #F3F4F6;
+      color: #111827;
+      vertical-align: top;
+    }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table td:first-child {
+      font-family: 'SFMono-Regular', 'Consolas', monospace;
+      font-size: 12px;
+      color: #6D28D9;
+    }
+
+    /* ── Code / pre blocks ─────────────────────────────────────────── */
+    pre {
+      background: #F3F4F6;
+      color: #111827;
+      padding: 16px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-family: 'SFMono-Regular', 'Consolas', monospace;
+      line-height: 1.65;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 450px;
+      border: 1px solid #E5E7EB;
+    }
+    code {
+      background: #EDE9FE;
+      color: #5B21B6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: 'SFMono-Regular', 'Consolas', monospace;
+    }
+
+    /* ── Footer ────────────────────────────────────────────────────── */
+    .site-footer {
+      text-align: center;
+      padding: 20px 28px;
+      font-size: 12px;
+      color: #4B5563;
+      border-top: 1px solid #E5E7EB;
+      background: #FFFFFF;
+    }
   </style>
 </head>
 <body>
-<div class="header">
-  <h1>&#128230; Release Preview Dashboard</h1>
-  <p>${JOB_NAME} &middot; Build #${BUILD_NUMBER} &middot; ${VERSION}</p>
-</div>
-<div class="container">
 
-  <div class="approval">
-    <p>Review all changes below, then approve or abort the production deployment.<br>
-    You must be logged into Jenkins to use these buttons.</p>
-    <a href="${APPROVE_URL}" class="btn approve">&#9989;&nbsp;&nbsp;Approve Deploy</a>
-    <a href="${ABORT_URL}" class="btn abort">&#10060;&nbsp;&nbsp;Abort</a>
-  </div>
+  <!-- ── Sticky Header ──────────────────────────────────────────────── -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="header-left">
+        <span class="header-title">Release Preview</span>
+        <span class="pill">${JOB_NAME}</span>
+        <span class="pill">Build #${BUILD_NUMBER}</span>
+      </div>
+      <div class="header-actions">
+        <span class="header-note">&#9888; You must be logged into Jenkins &middot; Expires in 24 h</span>
+        <a href="${APPROVE_URL}" class="btn-approve">&#9989; Approve Deploy</a>
+        <a href="${ABORT_URL}"   class="btn-abort">&#10060; Abort</a>
+      </div>
+    </div>
+  </header>
 
-  <div class="card">
-    <div class="card-hdr">&#127381; Build Info</div>
-    <div class="card-body">
-      <div class="meta">
-        <div class="meta-item"><label>Version</label><span>${VERSION}</span></div>
-        <div class="meta-item"><label>Commit</label><span><code>${SHORT_SHA}</code></span></div>
-        <div class="meta-item"><label>Environment</label><span>${ENVIRONMENT}</span></div>
-        <div class="meta-item"><label>Build</label><span>#${BUILD_NUMBER}</span></div>
+  <!-- ── Build Info Strip ───────────────────────────────────────────── -->
+  <div class="build-strip">
+    <div class="build-strip-inner">
+      <div class="stat-pill">
+        <span class="sp-label">Version</span>
+        <span class="sp-value">${VERSION}</span>
+      </div>
+      <div class="stat-pill">
+        <span class="sp-label">Commit</span>
+        <span class="sp-value">${SHORT_SHA}</span>
+      </div>
+      <div class="stat-pill">
+        <span class="sp-label">Environment</span>
+        <span class="sp-value">${ENVIRONMENT}</span>
+      </div>
+      <div class="stat-pill">
+        <span class="sp-label">Build #</span>
+        <span class="sp-value">${BUILD_NUMBER}</span>
       </div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-hdr">&#128200; Git Commits</div>
-    <div class="card-body">
-      <table>
-        <tr><th>Commit</th><th>Author</th><th>Date</th><th>Message</th></tr>
-        $(cat ${PREVIEW_DIR}/commits.html 2>/dev/null || echo '<tr><td colspan="4" style="color:#484f58">No commits found</td></tr>')
-      </table>
-    </div>
-  </div>
+  <!-- ── Collapsible Sections ───────────────────────────────────────── -->
+  <div class="page-body">
 
-  <div class="card">
-    <div class="card-hdr">&#128196; Changed Files</div>
-    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/changed-files.txt 2>/dev/null || echo 'No changes')</pre></div>
-  </div>
+    <!-- Git Commits — open by default -->
+    <details open>
+      <summary>&#128203; Git Commits</summary>
+      <div class="section-body">
+        <table class="data-table">
+          <thead>
+            <tr><th>Hash</th><th>Author</th><th>Date</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            $(cat ${PREVIEW_DIR}/commits.html 2>/dev/null || echo '<tr><td colspan="4">No data</td></tr>')
+          </tbody>
+        </table>
+      </div>
+    </details>
 
-  <div class="card">
-    <div class="card-hdr">&#128202; Diff Stat</div>
-    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/git-diff-stat.txt 2>/dev/null || echo 'Not available')</pre></div>
-  </div>
+    <!-- Changed Files — open by default -->
+    <details open>
+      <summary>&#128193; Changed Files</summary>
+      <div class="section-body">
+        <pre>$(cat ${PREVIEW_DIR}/changed-files.txt 2>/dev/null || echo 'No changes')</pre>
+      </div>
+    </details>
 
-  <div class="card">
-    <div class="card-hdr">&#9881;&#65039; Helm Diff</div>
-    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/helm-diff.txt 2>/dev/null || echo 'Not available or no changes')</pre></div>
-  </div>
+    <!-- Diff Summary — collapsed -->
+    <details>
+      <summary>&#128202; Diff Summary</summary>
+      <div class="section-body">
+        <pre>$(cat ${PREVIEW_DIR}/git-diff-stat.txt 2>/dev/null || echo 'Not available')</pre>
+      </div>
+    </details>
 
-  <div class="card">
-    <div class="card-hdr">&#128274; ConfigMap Diff</div>
-    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/configmap-diff.txt 2>/dev/null || echo 'No configmap changes')</pre></div>
-  </div>
+    <!-- Helm Diff — collapsed -->
+    <details>
+      <summary>&#9881;&#65039; Helm Diff</summary>
+      <div class="section-body">
+        <pre>$(cat ${PREVIEW_DIR}/helm-diff.txt 2>/dev/null || echo 'Not available')</pre>
+      </div>
+    </details>
 
-  <div class="card">
-    <div class="card-hdr">&#128272; Secret Diff</div>
-    <div class="card-body"><pre>$(cat ${PREVIEW_DIR}/secret-diff.txt 2>/dev/null || echo 'No secret changes')</pre></div>
-  </div>
+    <!-- ConfigMap Diff — collapsed -->
+    <details>
+      <summary>&#128462; ConfigMap Diff</summary>
+      <div class="section-body">
+        <pre>$(cat ${PREVIEW_DIR}/configmap-diff.txt 2>/dev/null || echo 'No changes')</pre>
+      </div>
+    </details>
 
-  <div class="ftr">Jenkins CI &middot; ${JOB_NAME} &middot; ${BUILD_URL}</div>
-</div>
+    <!-- Secret Diff — collapsed -->
+    <details>
+      <summary>&#128273; Secret Diff</summary>
+      <div class="section-body">
+        <pre>$(cat ${PREVIEW_DIR}/secret-diff.txt 2>/dev/null || echo 'No changes')</pre>
+        <p style="margin-top:10px;font-size:12px;color:#4B5563;">&#128274; Secret values are redacted in this output.</p>
+      </div>
+    </details>
+
+  </div><!-- /page-body -->
+
+  <!-- ── Footer ─────────────────────────────────────────────────────── -->
+  <footer class="site-footer">
+    Jenkins CI &middot; devsecops &middot; powered by Pulse
+  </footer>
+
 </body>
 </html>
 HTMLEOF
@@ -591,8 +807,8 @@ HTMLEOF
 
                 script {
                     if (params.NOTIFY_EMAIL?.trim()) {
-                        def approveUrl  = "${env.BUILD_URL}input/deploy-approval/proceedEmpty"
-                        def abortUrl    = "${env.BUILD_URL}input/deploy-approval/abort"
+                        def approveUrl  = "http://100.89.50.27:30881/job/devsecops/job/master/${env.BUILD_NUMBER}/input/deploy-approval/proceedEmpty"
+                        def abortUrl    = "http://100.89.50.27:30881/job/devsecops/job/master/${env.BUILD_NUMBER}/input/deploy-approval/abort"
                         def dashUrl     = "${env.BUILD_URL}Release_20Preview_20Dashboard"
                         def ver         = env.VERSION ?: env.BUILD_NUMBER
                         def sha         = env.SHORT_SHA ?: (env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : 'N/A')
