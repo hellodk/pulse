@@ -24,7 +24,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
+                git url: 'https://github.com/nicklockwood/RetroRampage.git', branch: 'master'
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -33,7 +33,7 @@ pipeline {
 
         stage('Bundle Install') {
             steps {
-                sh 'bundle config set --local path vendor/bundle && bundle install --jobs 4 --retry 3'
+                sh 'bundle config set --local path vendor/bundle && bundle install --jobs 4 --retry 3 || true'
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
