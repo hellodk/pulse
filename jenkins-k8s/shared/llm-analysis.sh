@@ -187,3 +187,65 @@ fi
 } > llm-analysis.md
 
 echo "[llm-analysis] Done — written to llm-analysis.md" >&2
+
+# ---------------------------------------------------------------------------
+# Second LLM call — best-effort improvement suggestions
+# ---------------------------------------------------------------------------
+IMPROVEMENT_PROMPT="Based on this Jenkins build failure, suggest 2-3 concrete improvements to the pipeline/build configuration to prevent recurrence.
+
+Job: ${JOB_NAME}
+Build #: ${BUILD_NUMBER}
+Failed Stage: ${FAILED_STAGE}
+
+Error Snippet:
+\`\`\`
+${ERROR_SNIPPET}
+\`\`\`
+
+Respond with a numbered list of 2-3 actionable improvements. Be specific and concise."
+
+call_ollama_improvement() {
+    local endpoint="$1"
+    local model="$2"
+    local output_file="$3"
+    echo "  → [improvements] Calling ${endpoint} model: ${model}" >&2
+    local payload
+    payload=$(jq -n \
+        --arg model "$model" \
+        --arg prompt "$IMPROVEMENT_PROMPT" \
+        '{model: $model, prompt: $prompt, stream: false}')
+    curl -sf --max-time "$TIMEOUT" \
+        -X POST "${endpoint}/api/generate" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        | jq -r '.response // ""' \
+        > "$output_file" 2>/dev/null \
+        || true
+}
+
+echo "[llm-analysis] Requesting improvement suggestions (best-effort)…" >&2
+IMPROVEMENT_TEXT=""
+
+# Try endpoint A first
+if [ -n "$MODEL_A" ]; then
+    call_ollama_improvement "$ENDPOINT_A" "$MODEL_A" "${TMP}/improvements.md"
+    IMPROVEMENT_TEXT=$(cat "${TMP}/improvements.md" 2>/dev/null || true)
+fi
+
+# Fall back to endpoint B if A produced nothing
+if [ -z "$IMPROVEMENT_TEXT" ] && [ -n "$MODEL_B" ]; then
+    call_ollama_improvement "$ENDPOINT_B" "$MODEL_B" "${TMP}/improvements_b.md"
+    IMPROVEMENT_TEXT=$(cat "${TMP}/improvements_b.md" 2>/dev/null || true)
+fi
+
+# Append improvement suggestions section only if we got content
+if [ -n "$IMPROVEMENT_TEXT" ]; then
+    {
+        printf '\n\n---\n\n'
+        printf '## Improvement Suggestions\n\n'
+        printf '%s\n' "$IMPROVEMENT_TEXT"
+    } >> llm-analysis.md
+    echo "[llm-analysis] Improvement suggestions appended." >&2
+else
+    echo "[llm-analysis] No improvement suggestions obtained (both endpoints unavailable or returned empty). Skipping." >&2
+fi

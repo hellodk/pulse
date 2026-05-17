@@ -237,38 +237,46 @@ pipeline {
             script {
                 def llmReport = 'LLM analysis not available — check Ollama endpoint connectivity.'
                 try {
-                    // Use llm-analysis.sh from the pulse repo (mounted at /home/dk/Documents/git/pulse)
-                    sh """
-                        set -euo pipefail
-                        # Smart extraction: grabs Gradle errors, lint issues, test failures
-                        bash /home/dk/Documents/git/pulse/jenkins-k8s/shared/extract-build-errors.sh \
-                            > build-error-report.txt 2>/dev/null || true
+                    sh """#!/bin/bash
+set -eo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+PULSE_DIR="/tmp/pulse-zip-\$\$"
+git clone --depth 1 --single-branch --branch master \
+    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    "\$PULSE_DIR" 2>/dev/null || true
+if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
+    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
+fi
+rm -rf "\$PULSE_DIR"
+"""
+                    archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
+                    sh """#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
-                        export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
-                        export LOG_TAIL="\${ERROR_SNIPPET}"
-                        export BUILD_NUMBER="${env.BUILD_NUMBER}"
-                        export JOB_NAME="${env.JOB_NAME}"
-                        export BUILD_TYPE="Android-APK"
-                        export APP_NAME="Sunflower"
-                        export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
-                        export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-                        bash /home/dk/Documents/git/pulse/jenkins-k8s/shared/llm-analysis.sh
-                    """
+PULSE_DIR="/tmp/pulse-\$\$"
+git clone --depth 1 --single-branch --branch master \
+    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    "\$PULSE_DIR" 2>/dev/null \
+  || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
-                    // Bundle logs for attachment
-                    sh """
-                        mkdir -p build-logs
-                        cp llm-analysis.md build-logs/ 2>/dev/null || true
-                        find . -path '*/test-results/*.xml' | head -50 | while read f; do
-                            cp --parents "\$f" build-logs/
-                        done
-                        find reports -name '*.html' 2>/dev/null | while read f; do
-                            cp --parents "\$f" build-logs/
-                        done
-                        zip -r build-${env.BUILD_NUMBER}-logs.zip build-logs/ 2>/dev/null || true
-                    """
-                    archiveArtifacts artifacts: 'llm-analysis.md,build-*-logs.zip', allowEmptyArchive: true
+# Smart extraction: grabs Gradle errors, lint issues, test failures
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \
+    > build-error-report.txt 2>/dev/null || true
+
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="Android-APK"
+export APP_NAME="Sunflower"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
+rm -rf "\$PULSE_DIR"
+"""
+                    archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
                     // readFile is sandbox-safe (whitelisted Jenkins step — no rawBuild needed)
                     if (fileExists('llm-analysis.md')) {
                         llmReport = readFile('llm-analysis.md')
@@ -284,7 +292,7 @@ pipeline {
                         subject: "❌ Android FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} — Stage: ${env.FAILED_STAGE ?: 'Unknown'}",
                         mimeType: 'text/html',
                         to: params.NOTIFY_EMAIL,
-                        attachmentsPattern: "build-${env.BUILD_NUMBER}-logs.zip",
+                        attachmentsPattern: 'llm-analysis.md,build-logs-*.zip',
                         body: """
 <html><head><style>
 body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
@@ -320,7 +328,7 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
 <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
 </div>
-<div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale &middot; ${params.LLM_ENDPOINT_A})</span></div>
+<div class="sec">&#129302; LLM Failure Analysis &amp; Improvement Suggestions <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale &middot; ${params.LLM_ENDPOINT_A})</span></div>
 <div class="llm">${llmTrunc}</div>
 <p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
 </div>

@@ -812,14 +812,27 @@ tr:nth-child(odd) td{background:#fafbfc;}
                     def llmReport = 'LLM analysis not available.'
                     try {
                         sh """#!/bin/bash
+set -eo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+PULSE_DIR="/tmp/pulse-zip-\$\$"
+git clone --depth 1 --single-branch --branch master \
+    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    "\$PULSE_DIR" 2>/dev/null || true
+if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
+    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
+fi
+rm -rf "\$PULSE_DIR"
+"""
+                        archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
+                        sh """#!/bin/bash
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-PULSE_DIR=""
-for P in "\$HOME/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
-    [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
-done
-[ -z "\$PULSE_DIR" ] && echo "LLM scripts not found on this agent — skipping analysis" && exit 1
+PULSE_DIR="/tmp/pulse-\$\$"
+git clone --depth 1 --single-branch --branch master \
+    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    "\$PULSE_DIR" 2>/dev/null \
+  || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
 bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
 export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
@@ -831,8 +844,11 @@ export BUILD_TYPE="DevSecOps-K8s"
 export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
 export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
 bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
+rm -rf "\$PULSE_DIR"
 """
-                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                        sh """#!/bin/bash
+set -eo pipefail
+                    archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
                         if (fileExists('llm-analysis.md')) { llmReport = readFile('llm-analysis.md') }
                     } catch (e) {
                         llmReport = "LLM analysis failed: ${e.message}"
@@ -844,7 +860,7 @@ bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
                             subject: "❌ DevSecOps FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                             mimeType: 'text/html',
                             to: params.NOTIFY_EMAIL,
-                            attachmentsPattern: 'llm-analysis.md',
+                            attachmentsPattern: 'llm-analysis.md,build-logs-*.zip',
                             body: """<html><head><style>
 body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
 .wrap{max-width:760px;margin:0 auto;}
@@ -877,7 +893,7 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
 <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
 </div>
-<div class="sec">&#129302; LLM Failure Analysis</div>
+<div class="sec">&#129302; LLM Failure Analysis &amp; Improvement Suggestions</div>
 <div class="llm">${llmTrunc}</div>
 </div>
 <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>

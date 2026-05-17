@@ -586,20 +586,29 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     def llmAvailable = false
 
                     try {
+                        sh """#!/bin/bash
+set -eo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+PULSE_DIR="/tmp/pulse-zip-\$\$"
+git clone --depth 1 --single-branch --branch master \
+    http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+    "\$PULSE_DIR" 2>/dev/null || true
+if [ -f "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" ]; then
+    bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh"
+fi
+rm -rf "\$PULSE_DIR"
+"""
+                        archiveArtifacts artifacts: "build-logs-*.zip", allowEmptyArchive: true
                         // ── Smart log extraction ──────────────────────────────
-                        // Universal PULSE_DIR resolver — works on Mac Mini agents
-                        // (~/Documents/git/pulse) and Linux agents (/home/dk/Documents/git/pulse)
-                        // without needing checkout scm.
                         sh """#!/bin/bash -l
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        PULSE_DIR=""
-                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
-                            [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
-                        done
-                        [ -z "\$PULSE_DIR" ] && echo "LLM scripts not found on this agent — skipping analysis" && exit 1
-                        echo "PULSE_DIR=\$PULSE_DIR"
+                        PULSE_DIR="/tmp/pulse-\$\$"
+                        git clone --depth 1 --single-branch --branch master \
+                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+                            "\$PULSE_DIR" 2>/dev/null \
+                          || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
                         export WORKSPACE="\${WORKSPACE}"
                         export MAX_LINES=200
@@ -609,6 +618,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
                         REPORT_LINES=\$(wc -l < build-error-report.txt | tr -d ' ')
                         echo "Error report: \${REPORT_LINES} lines (sent to LLM)"
+                        rm -rf "\$PULSE_DIR"
                         """
 
                         // 2. Run LLM analysis with the concise error report
@@ -616,11 +626,11 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        PULSE_DIR=""
-                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
-                            [ -f "\$P/jenkins-k8s/shared/llm-analysis.sh" ] && PULSE_DIR="\$P" && break
-                        done
-                        [ -z "\$PULSE_DIR" ] && echo "PULSE_DIR not found — skipping LLM analysis" && exit 1
+                        PULSE_DIR="/tmp/pulse-\$\$"
+                        git clone --depth 1 --single-branch --branch master \
+                            http://dk:admin123@100.89.50.27:30300/dk/pulse.git \
+                            "\$PULSE_DIR" 2>/dev/null \
+                          || { echo "Cannot clone pulse from Gitea — skipping LLM analysis"; exit 1; }
 
                         export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
                         export BUILD_NUMBER="${env.BUILD_NUMBER}"
@@ -650,10 +660,13 @@ DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, 
 
                         bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
                         echo "LLM analysis complete → llm-analysis.md"
+                        rm -rf "\$PULSE_DIR"
                         """
 
                         // 3. Archive the report as a build artifact
-                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                        sh """#!/bin/bash
+set -eo pipefail
+                    archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
 
                         // 4. Read the report — readFile() is sandbox-safe (whitelisted Jenkins step)
                         //    This is the correct alternative to currentBuild.rawBuild.getLog()
@@ -679,7 +692,7 @@ DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, 
                         def llmSection = llmAvailable
                             ? """
   <h3 style="border-bottom:2px solid #cc0000;padding-bottom:6px;margin-top:24px;">
-    &#129302; LLM Failure Analysis
+    &#129302; LLM Failure Analysis &amp; Improvement Suggestions
     <span style="font-size:11px;font-weight:normal;color:#666;">
       (via Ollama — Tailscale endpoints)
     </span>
@@ -694,7 +707,7 @@ ${llmReport.take(8000)}${llmReport.size() > 8000 ? '\n\n... (truncated — see l
   </p>"""
                             : """
   <h3 style="border-bottom:1px solid #ccc;padding-bottom:6px;margin-top:24px;">
-    &#129302; LLM Failure Analysis
+    &#129302; LLM Failure Analysis &amp; Improvement Suggestions
   </h3>
   <p style="color:#666;">${llmReport}</p>"""
 
@@ -702,7 +715,7 @@ ${llmReport.take(8000)}${llmReport.size() > 8000 ? '\n\n... (truncated — see l
                             subject: "&#10060; iOS BUILD FAILED: ${env.APP_NAME} ${params.ENVIRONMENT} #${env.BUILD_NUMBER}",
                             mimeType: 'text/html',
                             to: params.NOTIFY_EMAIL,
-                            attachmentsPattern: 'llm-analysis.md',
+                            attachmentsPattern: 'llm-analysis.md,build-logs-*.zip',
                             body: """
 <html>
 <body style="font-family:Arial,sans-serif;font-size:14px;color:#333;">
