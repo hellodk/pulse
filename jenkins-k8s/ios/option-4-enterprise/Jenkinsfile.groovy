@@ -664,9 +664,7 @@ DUMMY_SIGNING=${params.DUMMY_SIGNING} — IPA packaged via manual Payload/ zip, 
                         """
 
                         // 3. Archive the report as a build artifact
-                        sh """#!/bin/bash
-set -eo pipefail
-                    archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
 
                         // 4. Read the report — readFile() is sandbox-safe (whitelisted Jenkins step)
                         //    This is the correct alternative to currentBuild.rawBuild.getLog()

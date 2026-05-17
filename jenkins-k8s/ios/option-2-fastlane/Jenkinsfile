@@ -154,8 +154,6 @@ export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
 bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh"
 rm -rf "\$PULSE_DIR"
 """
-                    sh """#!/bin/bash
-set -eo pipefail
                     archiveArtifacts artifacts: 'llm-analysis.md', allowEmptyArchive: true
                     if (fileExists('llm-analysis.md')) {
                         llmReport = readFile('llm-analysis.md')
