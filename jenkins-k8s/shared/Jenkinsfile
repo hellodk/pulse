@@ -136,9 +136,6 @@ pipeline {
             }
             post {
                 always {
-                    dependencyCheckPublisher(
-                        pattern: 'reports/dependency-check/dependency-check-report.xml'
-                    )
                     publishHTML([
                         allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
                         reportDir: 'reports/dependency-check',
@@ -391,11 +388,11 @@ tr:nth-child(odd) td{background:#fafbfc;}
 </div>
 <div class="ftr">Jenkins CI &middot; Pulse &middot; ${buildUrl}</div>
 </div></body></html>"""
+                    def subject = "✅ Android SUCCESS: ${jobName} #${buildNum} — ${version} ready"
                     emailext(
-                        subject: "✅ Android SUCCESS: ${jobName} #${buildNum} — ${version} ready",
+                        subject: subject,
                         mimeType: 'text/html',
                         to: params.NOTIFY_EMAIL,
-                        attachmentsPattern: "build-${buildNum}-artifacts.zip",
                         body: emailBody
                     )
                 }
