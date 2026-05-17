@@ -15,8 +15,6 @@ pipeline {
     }
 
     environment {
-        NEXUS_CREDS                  = credentials('nexus-creds')
-        JFROG_CREDS                  = credentials('jfrog-creds')
         FASTLANE_DONT_STORE_PASSWORD = '1'
         FASTLANE_SKIP_UPDATE_CHECK   = '1'
     }
@@ -67,7 +65,12 @@ FFEOF
 
         stage('Bundle Install') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; bundle config set --local path vendor/bundle && bundle install --jobs 4 --retry 3'
+                sh '''#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# vendor/bundle is persisted in the workspace — only installs on first run or Gemfile change
+bundle config set --local path vendor/bundle
+bundle install --jobs 4 --retry 3
+'''
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -76,7 +79,7 @@ FFEOF
 
         stage('Resolve Dependencies') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; bundle exec fastlane resolve_deps'
+                sh 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"; bundle exec fastlane resolve_deps'
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -85,7 +88,7 @@ FFEOF
 
         stage('Test') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; bundle exec fastlane test'
+                sh 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"; bundle exec fastlane test'
             }
             post {
                 always {
@@ -102,7 +105,10 @@ FFEOF
 
         stage('Build') {
             steps {
-                sh "source ~/.bashrc 2>/dev/null || true; BUILD_NUMBER=${BUILD_NUMBER} bundle exec fastlane build"
+                sh '''#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+bundle exec fastlane build
+'''
             }
             post {
                 always {
@@ -114,7 +120,7 @@ FFEOF
 
         stage('SAST') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; bundle exec fastlane sast'
+                sh 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"; bundle exec fastlane sast'
             }
             post {
                 always {
@@ -136,8 +142,8 @@ FFEOF
                     usernamePassword(credentialsId: 'jfrog-creds',
                         usernameVariable: 'JFROG_USER', passwordVariable: 'JFROG_PASS')
                 ]) {
-                    sh 'source ~/.bashrc 2>/dev/null || true; bundle exec fastlane upload_nexus'
-                    sh 'source ~/.bashrc 2>/dev/null || true; bundle exec fastlane upload_jfrog'
+                    sh 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"; bundle exec fastlane upload_nexus'
+                    sh 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"; bundle exec fastlane upload_jfrog'
                 }
             }
             post {
@@ -301,6 +307,10 @@ rm -rf "\$PULSE_DIR"
             }
         }
 
-        cleanup { deleteDir() }
+        cleanup {
+            // Keep vendor/bundle so bundle install is fast on subsequent builds.
+            // Only wipe ephemeral build outputs.
+            sh 'rm -rf build build-logs* build-error-report.txt llm-analysis.md || true'
+        }
     }
 }
