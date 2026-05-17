@@ -128,46 +128,78 @@ pipeline {
         stage('Pre-requisite Check') {
             steps {
                 sh '''#!/bin/bash
-echo "=== Pre-requisite Check ==="
+echo "┌─────────────────────────────────────────────────────────────────────┐"
+echo "│                        Pre-requisite Check                          │"
+echo "└─────────────────────────────────────────────────────────────────────┘"
+printf "%-20s %-28s %-28s\\n" "Tool" "Installed" "Required"
+echo "────────────────────────────────────────────────────────────────────────"
 MISSING=""
 
-check() {
-    local name=$1; shift
-    if "$@" >/dev/null 2>&1; then
-        echo "  [OK]      $name"
+chk() {
+    local label="$1"
+    local req="$2"
+    local ver_cmd="$3"
+
+    if command -v "${4:-${label}}" >/dev/null 2>&1 || eval "${5:-false}" >/dev/null 2>&1; then
+        local ver
+        ver=$(eval "$ver_cmd" 2>/dev/null | head -1 | sed "s/[Vv]ersion:* //;s/^v//")
+        printf "  [OK]      %-26s %-28s %s\\n" "$label" "$ver" "$req"
     else
-        echo "  [MISSING] $name  <-- install manually"
-        MISSING="$MISSING $name"
+        printf "  [MISSING] %-26s %-28s --> install manually\\n" "$label" "$req"
+        MISSING="$MISSING\\n  - $label  (need: $req)"
+    fi
+}
+
+chk_plugin() {
+    local label="$1"
+    local req="$2"
+    local test_cmd="$3"
+    local install_hint="$4"
+
+    if eval "$test_cmd" >/dev/null 2>&1; then
+        local ver
+        ver=$(eval "$test_cmd" 2>/dev/null | head -1 | sed "s/[Vv]ersion:* //;s/^v//")
+        printf "  [OK]      %-26s %-28s %s\\n" "$label" "$ver" "$req"
+    else
+        printf "  [BROKEN]  %-26s %-28s --> %s\\n" "$label" "$req" "$install_hint"
+        MISSING="$MISSING\\n  - $label  (need: $req)  hint: $install_hint"
     fi
 }
 
 # Core tools
-check "helm"              command -v helm
-check "kubectl"           command -v kubectl
-check "docker"            command -v docker
-check "git"               command -v git
-check "jq"                command -v jq
-check "yq"                command -v yq
+chk "helm"      ">= 3.13.0  (have 3.17.0)" "helm version --short"
+chk "kubectl"   ">= 1.28.0  (have 1.35.0)" "kubectl version --client --short 2>/dev/null || kubectl version --client 2>/dev/null"
+chk "docker"    ">= 24.0"                   "docker --version"
+chk "git"       ">= 2.40"                   "git --version"
+chk "jq"        ">= 1.6     (have 1.7)"     "jq --version"
+chk "yq"        ">= 4.40"                   "yq --version"
 
 # Security scanners
-check "trivy"             command -v trivy
-check "syft"              command -v syft
-check "grype"             command -v grype
-check "gitleaks"          command -v gitleaks
-check "semgrep"           command -v semgrep
-check "cosign"            command -v cosign
+chk "trivy"     ">= 0.50.0  (have 0.70.0)" "trivy --version"
+chk "syft"      ">= 1.0.0"                  "syft version"
+chk "grype"     ">= 0.70.0"                 "grype version"
+chk "gitleaks"  ">= 8.0.0   (have 8.26.0)" "gitleaks version"
+chk "semgrep"   ">= 1.60.0"                 "semgrep --version"
+chk "cosign"    ">= 2.0.0"                  "cosign version"
 
 # Helm plugins
-check "helm-diff plugin"  helm diff version
+chk_plugin "helm-diff" \
+    ">= 3.9.4 (for Helm 3.13+)" \
+    "helm diff version" \
+    "helm plugin remove diff && helm plugin install https://github.com/databus23/helm-diff --version v3.9.4"
 
-echo ""
+echo "────────────────────────────────────────────────────────────────────────"
 if [ -n "$MISSING" ]; then
-    echo "WARNING: missing tools:$MISSING"
-    echo "Affected stages will be skipped (catchError) rather than failing the build."
+    echo ""
+    echo "  WARNING — the following tools are missing or broken:"
+    printf "$MISSING\\n"
+    echo ""
+    echo "  Affected pipeline stages will be skipped (catchError: UNSTABLE)."
+    echo "  Install missing tools on the cylon-agent host and re-run."
 else
-    echo "All tools present."
+    echo "  All tools present — pipeline will run fully."
 fi
-echo "==========================="
+echo "────────────────────────────────────────────────────────────────────────"
 '''
             }
             post {
