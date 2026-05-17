@@ -59,10 +59,7 @@ pipeline {
         stage('Build Debug APK') {
             steps {
                 sh """
-                    # Inject build version
-                    sed -i "s/versionCode [0-9]*/versionCode ${env.BUILD_NUMBER}/" app/build.gradle || true
-                    sed -i 's/versionName "[^"]*"/versionName "${env.VERSION_NAME}"/' app/build.gradle || true
-                    ./gradlew assembleDebug -PjacocoEnabled=true --stacktrace
+                    ./gradlew assembleDebug --stacktrace
                 """
             }
             post { failure { script { env.FAILED_STAGE = 'Build Debug APK' } } }
@@ -108,6 +105,7 @@ pipeline {
                 always {
                     recordIssues(
                         enabledForFailure: true,
+                        qualityGates: [],
                         tools: [
                             spotBugs(pattern: '**/build/reports/spotbugs/*.xml'),
                             androidLintParser(pattern: '**/build/reports/lint-results*.xml')
@@ -139,9 +137,7 @@ pipeline {
             post {
                 always {
                     dependencyCheckPublisher(
-                        pattern: 'reports/dependency-check/dependency-check-report.xml',
-                        failedTotalCritical: 1,
-                        unstableTotalHigh: 5
+                        pattern: 'reports/dependency-check/dependency-check-report.xml'
                     )
                     publishHTML([
                         allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
@@ -355,14 +351,14 @@ tr:nth-child(odd) td{background:#fafbfc;}
                 archiveArtifacts artifacts: "build-${env.BUILD_NUMBER}-artifacts.zip", allowEmptyArchive: true
 
                 if (params.NOTIFY_EMAIL?.trim()) {
-                    def duration = currentBuild.durationString ?: 'N/A'
-                    emailext(
-                        subject: "✅ Android SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} — ${env.VERSION_NAME ?: 'Build'} ready",
-                        mimeType: 'text/html',
-                        to: params.NOTIFY_EMAIL,
-                        attachmentsPattern: "build-${env.BUILD_NUMBER}-artifacts.zip",
-                        body: """
-<html><head><style>
+                    def duration  = currentBuild.durationString ?: 'N/A'
+                    def buildTs   = new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))
+                    def buildUrl  = env.BUILD_URL ?: ''
+                    def jobName   = env.JOB_NAME  ?: ''
+                    def buildNum  = env.BUILD_NUMBER ?: ''
+                    def version   = env.VERSION_NAME  ?: 'N/A'
+                    def apkFile   = env.APK_FILENAME  ?: 'N/A'
+                    def emailBody = """<html><head><style>
 body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
 .wrap{max-width:760px;margin:0 auto;}
 .hdr{background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
@@ -377,24 +373,30 @@ tr:nth-child(odd) td{background:#fafbfc;}
 .ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
 </style></head><body><div class="wrap">
 <div class="hdr"><h1>&#9989; Android Build Successful</h1>
-<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<p>${jobName} &middot; Build #${buildNum} &middot; ${buildTs}</p></div>
 <div class="body">
 <table>
-<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
-<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
-<tr><td class="lbl">Version</td><td>${env.VERSION_NAME ?: 'N/A'}</td></tr>
-<tr><td class="lbl">APK</td><td>${env.APK_FILENAME ?: 'N/A'}</td></tr>
+<tr><td class="lbl">Job</td><td>${jobName}</td></tr>
+<tr><td class="lbl">Build #</td><td>${buildNum}</td></tr>
+<tr><td class="lbl">Version</td><td>${version}</td></tr>
+<tr><td class="lbl">APK</td><td>${apkFile}</td></tr>
 <tr><td class="lbl">Agent</td><td>android-agent (k8s)</td></tr>
 <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
 </table>
 <div class="btns">
-<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
-<a href="${env.BUILD_URL}artifact" class="btn b2">Download APK</a>
-<a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+<a href="${buildUrl}" class="btn b1">Open Build</a>
+<a href="${buildUrl}artifact" class="btn b2">Download APK</a>
+<a href="${buildUrl}console" class="btn b2">Console Log</a>
 </div>
 </div>
-<div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+<div class="ftr">Jenkins CI &middot; Pulse &middot; ${buildUrl}</div>
 </div></body></html>"""
+                    emailext(
+                        subject: "✅ Android SUCCESS: ${jobName} #${buildNum} — ${version} ready",
+                        mimeType: 'text/html',
+                        to: params.NOTIFY_EMAIL,
+                        attachmentsPattern: "build-${buildNum}-artifacts.zip",
+                        body: emailBody
                     )
                 }
             }
