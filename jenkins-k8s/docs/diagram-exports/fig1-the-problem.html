@@ -6,8 +6,8 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
-    width:944px; height:572px;
-    background:#F9FAFB;
+    width:944px; height:568px;
+    background:#F3F4F6;
     overflow:hidden;
     font-family:'Geist',system-ui,sans-serif;
     -webkit-font-smoothing:antialiased;
@@ -15,18 +15,19 @@
   .canvas {
     margin:32px;
     background:#FFFFFF;
-    border:1px solid #E5E7EB;
+    border:1px solid #D1D5DB;
     border-radius:12px;
     overflow:hidden;
-    box-shadow:0 1px 4px rgba(0,0,0,.08);
+    box-shadow:0 2px 8px rgba(0,0,0,.10);
   }
   .caption {
     position:absolute;
     bottom:10px; left:0; right:0;
     text-align:center;
     font-family:'Geist Mono',monospace;
-    font-size:13px;
-    color:#9CA3AF;
+    font-size:12px;
+    font-weight:500;
+    color:#6B7280;
     letter-spacing:.05em;
   }
 </style>
@@ -34,35 +35,35 @@
 <body>
   <div class="canvas"><svg width="880" height="460" viewBox="0 0 880 460" xmlns="http://www.w3.org/2000/svg"
          style="font-family:'Geist',system-ui,sans-serif;">
-      <rect width="880" height="460" fill="#F9FAFB"/>
+      <rect fill="#FFFFFF"/>
 
       <!-- ── Column 1: CYLON HOST box (x:16–232, y:16–444) ── -->
-      <rect x="16" y="16" width="216" height="428" rx="10"
+      <rect x="16" y="16" rx="10"
             fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
       <!-- header band -->
-      <rect x="16" y="16" width="216" height="40" rx="10" fill="#F9FAFB"/>
-      <rect x="16" y="44" width="216" height="12" fill="#F9FAFB"/>
+      <rect x="16" y="16" rx="10" fill="#F9FAFB"/>
+      <rect x="16" y="44" fill="#F9FAFB"/>
       <text x="124" y="41" fill="#111827" font-size="12" font-weight="600"
             text-anchor="middle" letter-spacing=".04em">CYLON HOST</text>
-      <text x="124" y="68" fill="#6B7280" font-size="11" text-anchor="middle"
+      <text x="124" y="68" fill="#374151" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">192.168.1.10</text>
 
       <!-- Repo block (x:32–216, y:82–210) -->
-      <rect x="32" y="82" width="184" height="128" rx="8"
+      <rect x="32" y="82" rx="8"
             fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.2"/>
       <text x="124" y="108" fill="#1D4ED8" font-size="12" font-weight="600"
             text-anchor="middle">pulse.git</text>
-      <text x="124" y="127" fill="#4B5563" font-size="11" text-anchor="middle"
+      <text x="124" y="127" fill="#1F2937" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">/home/dk/Documents/</text>
-      <text x="124" y="143" fill="#4B5563" font-size="11" text-anchor="middle"
+      <text x="124" y="143" fill="#1F2937" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">git/pulse</text>
-      <rect x="44" y="155" width="160" height="44" rx="6"
+      <rect x="44" y="155" rx="6"
             fill="#DBEAFE" stroke="#93C5FD" stroke-width="1"/>
       <text x="124" y="173" fill="#1E40AF" font-size="11" text-anchor="middle">No remote origin</text>
       <text x="124" y="190" fill="#1E40AF" font-size="10" text-anchor="middle">local-only · master</text>
 
       <!-- Warning block (x:32–216, y:228–396) -->
-      <rect x="32" y="228" width="184" height="132" rx="8"
+      <rect x="32" y="228" rx="8"
             fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.2">
         <animate attributeName="stroke-opacity" values="1;.4;1" dur="2.4s" repeatCount="indefinite"/>
       </rect>
@@ -76,46 +77,46 @@
       <!-- ── Column 2: Agent boxes (x:296–498) ── -->
 
       <!-- Agent 1 (y:16–144, center-y=80) -->
-      <rect x="296" y="16" width="202" height="128" rx="8"
+      <rect x="296" y="16" rx="8"
             fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.2"/>
-      <rect x="296" y="16" width="202" height="36" rx="8" fill="#F0F9FF"/>
-      <rect x="296" y="40" width="202" height="12" fill="#F0F9FF"/>
+      <rect x="296" y="16" rx="8" fill="#F0F9FF"/>
+      <rect x="296" y="40" fill="#F0F9FF"/>
       <text x="397" y="38" fill="#0369A1" font-size="12" font-weight="600"
             text-anchor="middle" letter-spacing=".03em">MOBILEAPP-M3</text>
-      <text x="397" y="64" fill="#4B5563" font-size="11" text-anchor="middle">ios-agent · Mac Mini M3</text>
-      <text x="397" y="80" fill="#6B7280" font-size="11" text-anchor="middle"
+      <text x="397" y="64" fill="#1F2937" font-size="11" text-anchor="middle">ios-agent · Mac Mini M3</text>
+      <text x="397" y="80" fill="#374151" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">100.89.50.27</text>
-      <rect x="312" y="90" width="170" height="38" rx="5"
+      <rect x="312" y="90" rx="5"
             fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
       <text x="397" y="107" fill="#DC2626" font-size="10.5" text-anchor="middle">~/Documents/git/pulse</text>
       <text x="397" y="121" fill="#B91C1C" font-size="10" text-anchor="middle">manually cloned — may be stale</text>
 
       <!-- Agent 2 (y:164–292, center-y=228) -->
-      <rect x="296" y="164" width="202" height="128" rx="8"
+      <rect x="296" y="164" rx="8"
             fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.2"/>
-      <rect x="296" y="164" width="202" height="36" rx="8" fill="#F0F9FF"/>
-      <rect x="296" y="188" width="202" height="12" fill="#F0F9FF"/>
+      <rect x="296" y="164" rx="8" fill="#F0F9FF"/>
+      <rect x="296" y="188" fill="#F0F9FF"/>
       <text x="397" y="186" fill="#0369A1" font-size="12" font-weight="600"
             text-anchor="middle" letter-spacing=".03em">IOS-AGENT</text>
-      <text x="397" y="212" fill="#4B5563" font-size="11" text-anchor="middle">ios-agent · Mac Mini</text>
-      <text x="397" y="228" fill="#6B7280" font-size="11" text-anchor="middle"
+      <text x="397" y="212" fill="#1F2937" font-size="11" text-anchor="middle">ios-agent · Mac Mini</text>
+      <text x="397" y="228" fill="#374151" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">100.104.14.62</text>
-      <rect x="312" y="238" width="170" height="38" rx="5"
+      <rect x="312" y="238" rx="5"
             fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
       <text x="397" y="255" fill="#DC2626" font-size="10.5" text-anchor="middle">~/Documents/git/pulse</text>
       <text x="397" y="269" fill="#B91C1C" font-size="10" text-anchor="middle">manually cloned — may be stale</text>
 
       <!-- Agent 3 (y:312–440, center-y=376) -->
-      <rect x="296" y="312" width="202" height="128" rx="8"
+      <rect x="296" y="312" rx="8"
             fill="#FFFFFF" stroke="#86EFAC" stroke-width="1.2"/>
-      <rect x="296" y="312" width="202" height="36" rx="8" fill="#F0FDF4"/>
-      <rect x="296" y="336" width="202" height="12" fill="#F0FDF4"/>
+      <rect x="296" y="312" rx="8" fill="#F0FDF4"/>
+      <rect x="296" y="336" fill="#F0FDF4"/>
       <text x="397" y="334" fill="#15803D" font-size="12" font-weight="600"
             text-anchor="middle" letter-spacing=".03em">ANDROID BUILD POD</text>
-      <text x="397" y="360" fill="#4B5563" font-size="11" text-anchor="middle">Kubernetes pod · cylon-agent</text>
-      <text x="397" y="376" fill="#6B7280" font-size="11" text-anchor="middle"
+      <text x="397" y="360" fill="#1F2937" font-size="11" text-anchor="middle">Kubernetes pod · cylon-agent</text>
+      <text x="397" y="376" fill="#374151" font-size="11" text-anchor="middle"
             font-family="'Geist Mono',monospace">/home/dk/.../git/pulse</text>
-      <rect x="312" y="386" width="170" height="38" rx="5"
+      <rect x="312" y="386" rx="5"
             fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
       <text x="397" y="403" fill="#DC2626" font-size="10.5" text-anchor="middle">hostPath mount</text>
       <text x="397" y="417" fill="#B91C1C" font-size="10" text-anchor="middle">no git history, no versioning</text>
@@ -125,34 +126,34 @@
             stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
         <animate attributeName="stroke-dashoffset" values="0;-16" dur="1s" repeatCount="indefinite"/>
       </line>
-      <rect x="238" y="66" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <rect x="238" y="66" rx="3" fill="#FEF2F2"/>
       <text x="265" y="77" fill="#B91C1C" font-size="11" text-anchor="middle">git clone</text>
 
       <line x1="232" y1="228" x2="296" y2="228"
             stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
         <animate attributeName="stroke-dashoffset" values="0;-16" dur="1.2s" repeatCount="indefinite"/>
       </line>
-      <rect x="238" y="214" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <rect x="238" y="214" rx="3" fill="#FEF2F2"/>
       <text x="265" y="225" fill="#B91C1C" font-size="11" text-anchor="middle">git clone</text>
 
       <line x1="232" y1="376" x2="296" y2="376"
             stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5 3">
         <animate attributeName="stroke-dashoffset" values="0;-16" dur=".9s" repeatCount="indefinite"/>
       </line>
-      <rect x="238" y="362" width="54" height="14" rx="3" fill="#FEF2F2"/>
+      <rect x="238" y="362" rx="3" fill="#FEF2F2"/>
       <text x="265" y="373" fill="#B91C1C" font-size="11" text-anchor="middle">hostPath</text>
 
       <!-- ── Column 3: PULSE_DIR RESOLVER (x:562–864, y:16–444) ── -->
-      <rect x="562" y="16" width="302" height="428" rx="10"
+      <rect x="562" y="16" rx="10"
             fill="#FFFBEB" stroke="#FCD34D" stroke-width="1.5"/>
-      <rect x="562" y="16" width="302" height="44" rx="10" fill="#FEF9C3"/>
-      <rect x="562" y="48" width="302" height="12" fill="#FEF9C3"/>
+      <rect x="562" y="16" rx="10" fill="#FEF9C3"/>
+      <rect x="562" y="48" fill="#FEF9C3"/>
       <text x="713" y="42" fill="#92400E" font-size="12" font-weight="600"
             text-anchor="middle" letter-spacing=".04em">PULSE_DIR RESOLVER</text>
       <text x="713" y="70" fill="#78350F" font-size="11" text-anchor="middle">Embedded in all 6 Jenkinsfiles</text>
 
       <!-- code block inside resolver -->
-      <rect x="578" y="84" width="270" height="224" rx="7" fill="#1E293B"/>
+      <rect x="578" y="84" rx="7" fill="#1E293B"/>
       <text x="594" y="110" fill="#64748B" font-size="10" font-family="'Geist Mono',monospace"># post.failure block</text>
       <text x="594" y="130" fill="#94A3B8" font-size="10.5" font-family="'Geist Mono',monospace">PULSE_DIR=""</text>
       <text x="594" y="150" fill="#93C5FD" font-size="10.5" font-family="'Geist Mono',monospace">for</text>
@@ -167,7 +168,7 @@
       <text x="594" y="298" fill="#475569" font-size="10" font-family="'Geist Mono',monospace" font-style="italic"># × 6 pipelines</text>
 
       <!-- problems list -->
-      <rect x="578" y="320" width="270" height="108" rx="7"
+      <rect x="578" y="320" rx="7"
             fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1"/>
       <text x="713" y="344" fill="#DC2626" font-size="11" font-weight="600" text-anchor="middle">Known failure modes</text>
       <text x="594" y="364" fill="#B91C1C" font-size="10.5">→  Stale clone = wrong script version</text>
@@ -179,27 +180,24 @@
             stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
         <animate attributeName="stroke-dashoffset" values="0;-14" dur=".8s" repeatCount="indefinite"/>
       </line>
-      <rect x="504" y="66" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <rect x="504" y="66" rx="3" fill="#FFFBEB"/>
       <text x="530" y="77" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
 
       <line x1="498" y1="228" x2="562" y2="228"
             stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
         <animate attributeName="stroke-dashoffset" values="0;-14" dur="1s" repeatCount="indefinite"/>
       </line>
-      <rect x="504" y="214" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <rect x="504" y="214" rx="3" fill="#FFFBEB"/>
       <text x="530" y="225" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
 
       <line x1="498" y1="376" x2="562" y2="376"
             stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 3">
         <animate attributeName="stroke-dashoffset" values="0;-14" dur=".9s" repeatCount="indefinite"/>
       </line>
-      <rect x="504" y="362" width="52" height="14" rx="3" fill="#FFFBEB"/>
+      <rect x="504" y="362" rx="3" fill="#FFFBEB"/>
       <text x="530" y="373" fill="#92400E" font-size="11" text-anchor="middle">depends on</text>
 
     </svg></div>
-  <div class="caption">The Problem — Before Gitea · pulse / jenkins-k8s</div>
-  <script>
-    // wait for fonts then signal ready
-    document.fonts.ready.then(() => document.title = 'READY');
-  </script>
+  <div class="caption">The Problem — Before Gitea · pulse/jenkins-k8s · 2026</div>
+  <script>document.fonts.ready.then(()=>document.title='READY');</script>
 </body></html>
