@@ -110,10 +110,65 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+                sh 'mkdir -p ${PREVIEW_DIR}'
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
+        }
 
-                sh '''
-                    mkdir -p ${PREVIEW_DIR}
-                '''
+        /*
+         * ============================================================
+         * PRE-REQUISITE CHECK
+         * Validates all required tools are present. Reports missing ones
+         * as warnings — never installs anything automatically.
+         * ============================================================
+         */
+
+        stage('Pre-requisite Check') {
+            steps {
+                sh '''#!/bin/bash
+echo "=== Pre-requisite Check ==="
+MISSING=""
+
+check() {
+    local name=$1; shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  [OK]      $name"
+    else
+        echo "  [MISSING] $name  <-- install manually"
+        MISSING="$MISSING $name"
+    fi
+}
+
+# Core tools
+check "helm"              command -v helm
+check "kubectl"           command -v kubectl
+check "docker"            command -v docker
+check "git"               command -v git
+check "jq"                command -v jq
+check "yq"                command -v yq
+
+# Security scanners
+check "trivy"             command -v trivy
+check "syft"              command -v syft
+check "grype"             command -v grype
+check "gitleaks"          command -v gitleaks
+check "semgrep"           command -v semgrep
+check "cosign"            command -v cosign
+
+# Helm plugins
+check "helm-diff plugin"  helm diff version
+
+echo ""
+if [ -n "$MISSING" ]; then
+    echo "WARNING: missing tools:$MISSING"
+    echo "Affected stages will be skipped (catchError) rather than failing the build."
+else
+    echo "All tools present."
+fi
+echo "==========================="
+'''
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -171,10 +226,10 @@ pipeline {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
                     sh '''
-                        command -v helm || { echo "SKIP: helm not found"; exit 1; }
+                        command -v helm        || { echo "SKIP: helm not found — install helm"; exit 1; }
                         [ -d "${HELM_CHART_PATH}" ] || { echo "SKIP: chart not found at ${HELM_CHART_PATH}"; exit 1; }
-                        helm plugin list | grep diff || \
-                          helm plugin install https://github.com/databus23/helm-diff
+                        helm diff version 2>/dev/null \
+                          || { echo "SKIP: helm-diff plugin not working — run: helm plugin install https://github.com/databus23/helm-diff"; exit 1; }
                         helm diff upgrade ${HELM_RELEASE} ${HELM_CHART_PATH} \
                           --namespace ${HELM_NAMESPACE} --allow-unreleased \
                           > ${PREVIEW_DIR}/helm-diff.txt || true
