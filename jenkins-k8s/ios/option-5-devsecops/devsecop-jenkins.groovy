@@ -283,26 +283,67 @@ echo "────────────────────────�
         stage('Config & Secret Diff') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                    sh '''
-                        command -v yq    || { echo "SKIP: yq not found"; exit 1; }
-                        command -v helm  || { echo "SKIP: helm not found"; exit 1; }
-                        [ -d "${HELM_CHART_PATH}" ] || { echo "SKIP: chart not found"; exit 1; }
-                        mkdir -p rendered
-                        helm template ${HELM_RELEASE} ${HELM_CHART_PATH} \
-                          --namespace ${HELM_NAMESPACE} > rendered/all.yaml
-                        yq eval "select(.kind == \"ConfigMap\")" rendered/all.yaml \
-                          > rendered/configmaps.yaml || true
-                        yq eval "select(.kind == \"Secret\")" rendered/all.yaml \
-                          > rendered/secrets.yaml || true
-                        kubectl get configmaps -n ${HELM_NAMESPACE} -o yaml \
-                          > rendered/live-configmaps.yaml || true
-                        kubectl get secrets -n ${HELM_NAMESPACE} -o yaml \
-                          > rendered/live-secrets.yaml || true
-                        diff -u rendered/live-configmaps.yaml rendered/configmaps.yaml \
-                          > ${PREVIEW_DIR}/configmap-diff.txt || true
-                        diff -u rendered/live-secrets.yaml rendered/secrets.yaml \
-                          > ${PREVIEW_DIR}/secret-diff.txt || true
-                    '''
+                    sh '''#!/bin/bash
+command -v helm  || { echo "SKIP: helm not found"; exit 1; }
+[ -d "${HELM_CHART_PATH}" ] || { echo "SKIP: chart not found at ${HELM_CHART_PATH}"; exit 1; }
+
+mkdir -p rendered
+
+# Render helm chart to get incoming state
+helm template ${HELM_RELEASE} ${HELM_CHART_PATH} \
+  --namespace ${HELM_NAMESPACE} > rendered/all.yaml
+
+# ── ConfigMap diff ────────────────────────────────────────────────────────────
+# Extract incoming ConfigMap keys+values (no metadata noise)
+grep -A 200 "^kind: ConfigMap" rendered/all.yaml \
+  | grep -v "^  creationTimestamp:" \
+  | grep -v "^  managedFields" \
+  | grep -v "^  resourceVersion:" \
+  | grep -v "^  uid:" \
+  > rendered/incoming-cm.yaml 2>/dev/null || echo "(none)" > rendered/incoming-cm.yaml
+
+# Extract live ConfigMap (filter management noise)
+kubectl get configmap ${HELM_RELEASE}-config -n ${HELM_NAMESPACE} -o yaml \
+  2>/dev/null \
+  | grep -v "^  creationTimestamp:" \
+  | grep -v "^  managedFields" \
+  | grep -v "^  resourceVersion:" \
+  | grep -v "^  uid:" \
+  | grep -v "kubectl.kubernetes.io" \
+  > rendered/live-cm.yaml 2>/dev/null || echo "(no live configmap found)" > rendered/live-cm.yaml
+
+diff -u rendered/live-cm.yaml rendered/incoming-cm.yaml \
+  > ${PREVIEW_DIR}/configmap-diff.txt || true
+
+[ -s "${PREVIEW_DIR}/configmap-diff.txt" ] \
+  && echo "  → ConfigMap diff: $(grep -c "^[+-]" ${PREVIEW_DIR}/configmap-diff.txt) line(s) changed" \
+  || echo "  → ConfigMap diff: no changes"
+
+# ── Secret diff (KEY NAMES ONLY — values never shown) ────────────────────────
+INCOMING_KEYS=$(grep -A 50 "^kind: Secret" rendered/all.yaml \
+  | awk '/^stringData:|^data:/{found=1;next} found && /^  [a-zA-Z]/{print "  " $1}' \
+  | sed 's/://' | sort)
+
+LIVE_KEYS=$(kubectl get secret ${HELM_RELEASE}-secret -n ${HELM_NAMESPACE} \
+  -o jsonpath='{.data}' 2>/dev/null \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); [print(' ',k) for k in sorted(d)]" \
+  2>/dev/null || echo "  (no live secret found)")
+
+{
+  echo "Secret key comparison (VALUES ARE NEVER SHOWN):"
+  echo ""
+  echo "--- live/${HELM_NAMESPACE}/${HELM_RELEASE}-secret"
+  echo "+++ incoming/${HELM_RELEASE}-secret"
+  echo ""
+  diff <(echo "$LIVE_KEYS") <(echo "$INCOMING_KEYS") \
+    | grep "^[<>]" \
+    | sed 's/^< /  LIVE only  : /' \
+    | sed 's/^> /  NEW deploy : /' \
+    || echo "  (no key-level changes)"
+} > ${PREVIEW_DIR}/secret-diff.txt
+
+echo "  → Secret diff written (key names only)"
+'''
                 }
             }
             post {
@@ -476,8 +517,10 @@ echo "────────────────────────�
             steps {
 
                 sh '''#!/bin/bash
-APPROVE_URL="../input/deploy-approval/proceedEmpty"
-ABORT_URL="../input/deploy-approval/abort"
+# Absolute URLs with target="_top" so the links break out of the iframe
+# that HTML Publisher wraps around the report.
+APPROVE_URL="${BUILD_URL}input/deploy-approval/proceedEmpty"
+ABORT_URL="${BUILD_URL}input/deploy-approval/abort"
 
 cat > ${PREVIEW_DIR}/index.html <<HTMLEOF
 <!DOCTYPE html>
@@ -698,8 +741,8 @@ cat > ${PREVIEW_DIR}/index.html <<HTMLEOF
       </div>
       <div class="header-actions">
         <span class="header-note">&#9888; You must be logged into Jenkins &middot; Expires in 24 h</span>
-        <a href="${APPROVE_URL}" class="btn-approve">&#9989; Approve Deploy</a>
-        <a href="${ABORT_URL}"   class="btn-abort">&#10060; Abort</a>
+        <a href="${APPROVE_URL}" class="btn-approve" target="_top">&#9989; Approve Deploy</a>
+        <a href="${ABORT_URL}"   class="btn-abort"   target="_top">&#10060; Abort</a>
       </div>
     </div>
   </header>
@@ -865,6 +908,96 @@ HTMLEOF
 </div></body></html>"""
                         )
                     }
+                }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
+        }
+
+        /*
+         * ============================================================
+         * ARCHIVE RELEASE TO GITEA
+         * Pushes a snapshot of all release artifacts (text files only,
+         * no binaries) to the pulse repo under releases/ so that build
+         * history is preserved in Git without consuming Jenkins storage.
+         *
+         * Layout in repo:
+         *   releases/devsecops-master/
+         *     build-NNNN/
+         *       release-info.json    — version, sha, env, timestamp
+         *       commits.html         — git commit table
+         *       changed-files.txt    — file change list
+         *       git-diff-stat.txt    — diff stats
+         *       helm-diff.txt        — helm upgrade preview
+         *       configmap-diff.txt   — ConfigMap key/value diff
+         *       secret-diff.txt      — Secret key-names-only diff
+         *
+         * Storage: ~5-15 KB per build (text). Git delta compression
+         * means 1 000 builds ≈ a few MB on disk in Gitea.
+         * Browse any build at: http://100.89.50.27:30300/dk/pulse/src/
+         *   branch/master/releases/devsecops-master/
+         * ============================================================
+         */
+
+        stage('Archive Release to Gitea') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'gitea-pulse-creds',
+                    usernameVariable: 'GITEA_USR',
+                    passwordVariable: 'GITEA_PSW'
+                )]) {
+                    sh '''#!/bin/bash
+set -euo pipefail
+
+RELEASE_DIR="releases/devsecops-master/build-$(printf "%04d" ${BUILD_NUMBER})"
+ARCHIVE=$(mktemp -d)
+
+git clone --depth=1 --branch master \
+    "http://${GITEA_USR}:${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \
+    "$ARCHIVE" 2>/dev/null
+
+mkdir -p "$ARCHIVE/$RELEASE_DIR"
+
+# Copy preview artifacts (all small text files)
+for f in commits.html changed-files.txt git-diff-stat.txt \
+          helm-diff.txt configmap-diff.txt secret-diff.txt; do
+    [ -f "${PREVIEW_DIR}/$f" ] && cp "${PREVIEW_DIR}/$f" "$ARCHIVE/$RELEASE_DIR/" || true
+done
+
+# Write release metadata
+cat > "$ARCHIVE/$RELEASE_DIR/release-info.json" <<JSON
+{
+  "build":        ${BUILD_NUMBER},
+  "version":      "${VERSION}",
+  "commit":       "${CURRENT_COMMIT}",
+  "short_sha":    "${SHORT_SHA}",
+  "environment":  "${ENVIRONMENT}",
+  "timestamp":    "$(TZ=Asia/Kolkata date '+%Y-%m-%dT%H:%M:%S IST')",
+  "pipeline":     "${JOB_NAME}",
+  "dashboard_url":"${BUILD_URL}Release_20Preview_20Dashboard/",
+  "artifacts_url":"${BUILD_URL}artifact/preview-report/",
+  "status":       "pending_approval"
+}
+JSON
+
+cd "$ARCHIVE"
+git config user.email "jenkins@pulse.ci"
+git config user.name "Jenkins CI"
+git add "releases/"
+if git diff --cached --quiet; then
+    echo "No changes to archive for build ${BUILD_NUMBER}"
+else
+    git commit -m "release: devsecops-master build #${BUILD_NUMBER} v${SHORT_SHA}
+
+environment: ${ENVIRONMENT}
+dashboard:   ${BUILD_URL}Release_20Preview_20Dashboard/"
+    git push origin master
+    echo "Archived to: http://100.89.50.27:30300/dk/pulse/src/branch/master/${RELEASE_DIR}"
+fi
+
+rm -rf "$ARCHIVE"
+'''
                 }
             }
             post {

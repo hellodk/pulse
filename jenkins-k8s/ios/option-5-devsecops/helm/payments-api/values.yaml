@@ -1,8 +1,22 @@
-replicaCount: 1
+replicaCount: 2
+
 image:
   repository: registry.company.io/payments-api
   pullPolicy: IfNotPresent
   tag: ""
+
 service:
   type: ClusterIP
   port: 8080
+
+config:
+  logLevel:            "info"
+  dbHost:              "db.internal"
+  featureFlagPayments: "true"
+  maxConnections:      "100"
+
+# These are non-sensitive defaults; real values come from vault/secrets manager
+secrets:
+  dbPassword: "REPLACE_FROM_VAULT"
+  apiKey:     "REPLACE_FROM_VAULT"
+  jwtSecret:  "REPLACE_FROM_VAULT"
