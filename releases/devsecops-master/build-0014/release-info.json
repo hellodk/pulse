@@ -1,0 +1,12 @@
+{
+  "build":        14,
+  "version":      "v14-cd26ab5",
+  "commit":       "cd26ab588f786f28996540ae7a647cbd3e763a27",
+  "short_sha":    "cd26ab5",
+  "environment":  "prod",
+  "timestamp":    "2026-05-18T23:30:17 IST",
+  "pipeline":     "devsecops/master",
+  "dashboard_url":"http://192.168.1.10:30881/job/devsecops/job/master/14/Release_20Preview_20Dashboard/",
+  "artifacts_url":"http://192.168.1.10:30881/job/devsecops/job/master/14/artifact/preview-report/",
+  "status":       "pending_approval"
+}

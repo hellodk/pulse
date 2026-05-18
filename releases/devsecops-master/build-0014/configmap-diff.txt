@@ -1,0 +1,45 @@
+--- rendered/live-cm.yaml	2026-05-18 23:30:03.461173367 +0530
++++ rendered/incoming-cm.yaml	2026-05-18 23:30:03.427170848 +0530
+@@ -1,13 +1,33 @@
+-apiVersion: v1
+-data:
+-  APP_ENV: production
+-  DB_HOST: old-db.internal
+-  FEATURE_FLAG_LEGACY: "true"
+-  LOG_LEVEL: warn
+-  MAX_WORKERS: "4"
+ kind: ConfigMap
+ metadata:
+-  annotations:
+-      {"apiVersion":"v1","data":{"APP_ENV":"production","DB_HOST":"old-db.internal","FEATURE_FLAG_LEGACY":"true","LOG_LEVEL":"warn","MAX_WORKERS":"4"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"payments-api-config","namespace":"production"}}
+   name: payments-api-config
+   namespace: production
++data:
++  APP_ENV:               "production"
++  LOG_LEVEL:             "info"
++  DB_HOST:               "db.internal"
++  FEATURE_FLAG_PAYMENTS: "true"
++  MAX_CONNECTIONS:       "100"
++
++---
++# Source: payments-api/templates/deployment.yaml
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: payments-api
++  namespace: production
++spec:
++  replicas: 2
++  selector:
++    matchLabels:
++      app: payments-api
++  template:
++    metadata:
++      labels:
++        app: payments-api
++    spec:
++      containers:
++      - name: payments-api
++        image: "registry.company.io/payments-api:1.0"
++        ports:
++        - containerPort: 8080
