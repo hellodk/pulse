@@ -598,7 +598,8 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         PULSE_DIR="\$(mktemp -d)"
-                        git clone --depth 1 --single-branch --branch master \\
+                        git -c http.connectTimeout=10 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+    clone --depth 1 --single-branch --branch master \\
                             "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
                             "\$PULSE_DIR" 2>/dev/null \\
                           || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
@@ -648,31 +649,30 @@ React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages."
                                     "• jq is installed on the Mac Mini agent (brew install jq)"
                     }
 
-                    // 5. Send failure email with LLM report embedded
+                    // 5. Send failure email with error snippet + LLM report embedded
                     if (params.NOTIFY_EMAIL?.trim()) {
                         def duration   = currentBuild.durationString ?: 'N/A'
                         def mode       = params.DUMMY_SIGNING ? 'Dummy (self-signed)' : 'Enterprise (real)'
-                        def llmSection = llmAvailable
-                            ? """
-  <h3 style="border-bottom:2px solid #cc0000;padding-bottom:6px;margin-top:24px;">
-    &#129302; LLM Failure Analysis &amp; Improvement Suggestions
-    <span style="font-size:11px;font-weight:normal;color:#666;">
-      (via Ollama — Tailscale endpoints)
-    </span>
-  </h3>
-  <div style="background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:6px;
-              font-family:monospace;font-size:12px;white-space:pre-wrap;
-              word-break:break-all;max-height:600px;overflow-y:auto;">
-${llmReport.take(8000)}${llmReport.size() > 8000 ? '\n\n... (truncated — see llm-analysis.md artifact for full report)' : ''}
-  </div>
-  <p style="font-size:12px;color:#666;margin-top:8px;">
-    Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">Download llm-analysis.md</a>
-  </p>"""
-                            : """
-  <h3 style="border-bottom:1px solid #ccc;padding-bottom:6px;margin-top:24px;">
-    &#129302; LLM Failure Analysis &amp; Improvement Suggestions
-  </h3>
-  <p style="color:#666;">${llmReport}</p>"""
+                        def errorSnippet = fileExists('build-error-report.txt') ? readFile('build-error-report.txt').take(2000) : 'Not captured.'
+                        def llmBody = llmReport
+                        def llmSugg = ''
+                        if (llmReport.contains('## Improvement Suggestions')) {
+                            def idx = llmReport.indexOf('## Improvement Suggestions')
+                            llmBody = llmReport.take(idx).trim()
+                            llmSugg = llmReport.substring(idx).trim()
+                        }
+                        def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
+                        def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
+                        def codeStyle    = 'background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:6px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:500px;overflow-y:auto;'
+                        def secStyle     = 'border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-top:24px;font-size:14px;font-weight:700;'
+                        def llmSection   = """
+  <h3 style="${secStyle}">&#128270; Error Snippet</h3>
+  <div style="${codeStyle}">${errorSnippet}</div>
+  <h3 style="${secStyle}">&#129302; LLM Failure Analysis <span style="font-size:11px;font-weight:normal;color:#666;">(Ollama via Tailscale)</span></h3>
+  <div style="${codeStyle}">${llmBodyTrunc}</div>
+  <h3 style="${secStyle}">&#128161; Improvement Suggestions <span style="font-size:11px;font-weight:normal;color:#666;">(AI-generated)</span></h3>
+  <div style="${codeStyle}">${llmSuggTrunc.empty ? 'See llm-analysis.md artifact for suggestions.' : llmSuggTrunc}</div>
+  <p style="font-size:12px;color:#666;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">Download llm-analysis.md</a></p>"""
 
                         emailext(
                             subject: "&#10060; iOS BUILD FAILED: ${env.APP_NAME} ${params.ENVIRONMENT} #${env.BUILD_NUMBER}",

@@ -1039,7 +1039,8 @@ set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
 PULSE_DIR="\$(mktemp -d)"
-git clone --depth 1 --single-branch --branch master \\
+git -c http.connectTimeout=10 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+    clone --depth 1 --single-branch --branch master \\
     "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
     "\$PULSE_DIR" 2>/dev/null \\
   || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
@@ -1071,6 +1072,16 @@ rm -rf "\$PULSE_DIR"
                     if (params.NOTIFY_EMAIL?.trim()) {
                         def duration = currentBuild.durationString ?: 'N/A'
                         def llmTrunc = llmReport.size() > 8000 ? llmReport.take(8000) + '\n...(truncated)' : llmReport
+                        def errorSnippet = fileExists('build-error-report.txt') ? readFile('build-error-report.txt').take(2000) : 'Not captured — LLM analysis may have failed to run.'
+                        def llmBody = llmReport
+                        def llmSugg = ''
+                        if (llmReport.contains('## Improvement Suggestions')) {
+                            def idx = llmReport.indexOf('## Improvement Suggestions')
+                            llmBody = llmReport.take(idx).trim()
+                            llmSugg = llmReport.substring(idx).trim()
+                        }
+                        def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
+                        def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
                         emailext(
                             subject: "❌ DevSecOps FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                             mimeType: 'text/html',
@@ -1108,8 +1119,12 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
 <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
 </div>
-<div class="sec">&#129302; LLM Failure Analysis &amp; Improvement Suggestions</div>
-<div class="llm">${llmTrunc}</div>
+<div class="sec">&#128270; Error Snippet <span style="font-weight:normal;font-size:11px;color:#888;">(extracted from build log)</span></div>
+<div class="llm">${errorSnippet}</div>
+<div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
+<div class="llm">${llmBodyTrunc}</div>
+<div class="sec">&#128161; Improvement Suggestions <span style="font-weight:normal;font-size:11px;color:#888;">(AI-generated)</span></div>
+<div class="llm">${llmSuggTrunc.empty ? 'Suggestions not available — see llm-analysis.md artifact for full report.' : llmSuggTrunc}</div>
 </div>
 <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
 </div></body></html>"""

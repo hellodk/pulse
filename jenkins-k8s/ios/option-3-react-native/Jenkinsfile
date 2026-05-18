@@ -31,6 +31,7 @@ pipeline {
             steps {
                 git url: 'file:///Users/dk/jenkins-agent/git/mattermost-mobile', branch: 'main'
                 script { env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim() }
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
@@ -135,7 +136,8 @@ set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
 PULSE_DIR="\$(mktemp -d)"
-git clone --depth 1 --single-branch --branch master \\
+git -c http.connectTimeout=10 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+    clone --depth 1 --single-branch --branch master \\
     "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
     "\$PULSE_DIR" 2>/dev/null \\
   || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
@@ -207,9 +209,13 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
 <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
 </div>
-<div class="sec">&#129302; LLM Failure Analysis &amp; Improvement Suggestions <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
-<div class="llm">${llmTrunc}</div>
-<p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
+    <div class="sec">&#128270; Error Snippet <span style="font-weight:normal;font-size:11px;color:#888;">(extracted from build log)</span></div>
+    <div class="llm">${errorSnippet}</div>
+    <div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
+    <div class="llm">${llmBodyTrunc}</div>
+    <div class="sec">&#128161; Improvement Suggestions <span style="font-weight:normal;font-size:11px;color:#888;">(AI-generated)</span></div>
+    <div class="llm">${llmSuggTrunc.empty ? 'Suggestions not available — see llm-analysis.md artifact for full report.' : llmSuggTrunc}</div>
+    <p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
 </div>
 <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
 </div></body></html>"""
