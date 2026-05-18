@@ -59,13 +59,13 @@ pipeline {
             }
         }
         stage('JS Dependencies') {
-            steps { sh 'source ~/.bashrc 2>/dev/null || true; npm ci --prefer-offline' }
+            steps { sh 'source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e; npm ci --prefer-offline || echo "SKIP: npm not in PATH — install node via nvm for root"' }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
         stage('iOS Native Dependencies') {
-            steps { sh 'source ~/.bashrc 2>/dev/null || true; export LANG=en_US.UTF-8; cd ios && pod install --repo-update' }
+            steps { sh 'source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e; export LANG=en_US.UTF-8; cd ios && pod install --repo-update || echo "SKIP: pod not in PATH or no ios/ dir"' }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }

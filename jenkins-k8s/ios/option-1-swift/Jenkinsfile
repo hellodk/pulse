@@ -18,9 +18,9 @@ pipeline {
     }
 
     environment {
-        APP_NAME    = 'RetroRampage'
-        SCHEME      = 'RetroRampage'
-        WORKSPACE   = 'RetroRampage.xcodeproj'
+        APP_NAME     = 'RetroRampage'
+        SCHEME       = 'RetroRampage'
+        PROJECT_FILE = 'RetroRampage.xcodeproj'
         NEXUS_CREDS = credentials('nexus-creds')
         JFROG_CREDS = credentials('jfrog-creds')
         JFROG_URL   = 'http://100.89.50.27:30082/artifactory/example-repo-local'
@@ -61,7 +61,7 @@ pipeline {
         }
 
         stage('Resolve Dependencies') {
-            steps { sh "xcodebuild -resolvePackageDependencies -project ${WORKSPACE} -scheme '${SCHEME}'" }
+            steps { sh "xcodebuild -resolvePackageDependencies -project ${PROJECT_FILE} -scheme '${SCHEME}'" }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
@@ -70,7 +70,7 @@ pipeline {
         stage('Build Archive') {
             steps {
                 sh "mkdir -p build ${REPORTS_DIR}; agvtool new-version -all ${BUILD_NUMBER} || true"
-                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -project ${WORKSPACE} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -project ${PROJECT_FILE} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
                 sh 'zip -r build/${ARTIFACT} build/${APP_NAME}.xcarchive || true'
                 archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
             }
@@ -81,7 +81,7 @@ pipeline {
 
         stage('Unit Tests') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -project ${WORKSPACE} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true'
+                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -project ${PROJECT_FILE} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true'
             }
             post {
                 always { junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/test-results.xml" }
