@@ -349,17 +349,24 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
                         # Create fake provisioning profile
                         PROFILE_UUID="\$(uuidgen)"
-                        mkdir -p "\$HOME/Library/MobileDevice/Provisioning Profiles"
+                        USER_HOME="\${HOME:-/Users/dk}"
+                        PROFILES_DIR="\${USER_HOME}/Library/MobileDevice/Provisioning Profiles"
+                        mkdir -p "\${PROFILES_DIR}"
+
+                        PROFILE_PLIST_TMP="\$(mktemp /tmp/profile-plist.XXXXXX)"
+                        printf '<?xml version="1.0"?><!DOCTYPE plist><plist version="1.0"><dict><key>UUID</key><string>%s</string><key>TeamIdentifier</key><array><string>%s</string></array><key>ProvisionsAllDevices</key><true/><key>ExpirationDate</key><date>2027-01-01T00:00:00Z</date></dict></plist>' \\
+                            "\${PROFILE_UUID}" "\${TEAM_ID}" > "\${PROFILE_PLIST_TMP}"
                         openssl smime -sign \\
-                            -in <(printf '<?xml version="1.0"?><!DOCTYPE plist><plist version="1.0"><dict><key>UUID</key><string>%s</string><key>TeamIdentifier</key><array><string>%s</string></array><key>ProvisionsAllDevices</key><true/><key>ExpirationDate</key><date>2027-01-01T00:00:00Z</date></dict></plist>' "\${PROFILE_UUID}" "\${TEAM_ID}") \\
-                            -out "\$HOME/Library/MobileDevice/Provisioning Profiles/\${PROFILE_UUID}.mobileprovision" \\
-                            -signer "\${OUTPUT_DIR}/dist.crt" \\
-                            -inkey  "\${OUTPUT_DIR}/dist.key" \\
+                            -in       "\${PROFILE_PLIST_TMP}" \\
+                            -out      "\${PROFILES_DIR}/\${PROFILE_UUID}.mobileprovision" \\
+                            -signer   "\${OUTPUT_DIR}/dist.crt" \\
+                            -inkey    "\${OUTPUT_DIR}/dist.key" \\
                             -certfile "\${OUTPUT_DIR}/ca.crt" \\
                             -outform DER -nodetach 2>/dev/null || true
+                        rm -f "\${PROFILE_PLIST_TMP}"
 
                         rm -rf "\${OUTPUT_DIR}"
-                        echo "Dummy signing setup complete."
+                        echo "Dummy signing setup complete. Profile UUID: \${PROFILE_UUID}"
                         """
 
                     } else {
