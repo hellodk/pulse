@@ -18,9 +18,9 @@ pipeline {
     }
 
     environment {
-        APP_NAME    = 'FoodTruck'
-        SCHEME      = 'Food Truck'
-        WORKSPACE   = 'FoodTruck.xcodeproj'
+        APP_NAME    = 'RetroRampage'
+        SCHEME      = 'RetroRampage'
+        WORKSPACE   = 'RetroRampage.xcodeproj'
         NEXUS_CREDS = credentials('nexus-creds')
         JFROG_CREDS = credentials('jfrog-creds')
         JFROG_URL   = 'http://100.89.50.27:30082/artifactory/example-repo-local'
@@ -32,7 +32,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'file:///Users/dk/jenkins-agent/git/FoodTruck', branch: 'main'
+                git url: 'https://github.com/nicklockwood/RetroRampage.git', branch: 'master'
                 script {
                     env.GIT_SHA  = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.ARTIFACT = "${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip"

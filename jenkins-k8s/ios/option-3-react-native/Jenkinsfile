@@ -30,8 +30,10 @@ pipeline {
         stage('Checkout') {
             steps {
                 git url: 'file:///Users/dk/jenkins-agent/git/mattermost-mobile', branch: 'main'
-                script { env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim() }
+                script {
+                    env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
+                }
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }

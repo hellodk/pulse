@@ -47,10 +47,10 @@ pipeline {
                 git url: 'file:///home/dk/Documents/git/sunflower', branch: 'main'
                 script {
                     env.VERSION_NAME = sh(
-                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
                         script: "git describe --tags --always 2>/dev/null || git rev-parse --short HEAD",
                         returnStdout: true
                     ).trim()
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
                     env.APK_FILENAME = "app-debug-${env.VERSION_NAME}.apk"
                     echo "Building version: ${env.VERSION_NAME}"
                 }
