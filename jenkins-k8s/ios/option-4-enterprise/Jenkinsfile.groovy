@@ -269,16 +269,37 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        PULSE_DIR="\$(mktemp -d)"
-                        BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
                         SIGNING_SCRIPT="jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh"
-                        mkdir -p "\$PULSE_DIR/\$(dirname "\$SIGNING_SCRIPT")"
-                        curl -sf --max-time 30 "\$BASE_URL/\$SIGNING_SCRIPT" \
-                            -o "\$PULSE_DIR/\$SIGNING_SCRIPT" \
-                          || { echo "ERROR: Cannot fetch generate-dummy-signing.sh from Gitea"; rm -rf "\$PULSE_DIR"; exit 1; }
-                        chmod +x "\$PULSE_DIR/\$SIGNING_SCRIPT"
-                        bash "\$PULSE_DIR/\$SIGNING_SCRIPT"
-                        rm -rf "\$PULSE_DIR"
+
+                        # 1. Try local pulse clone on agent filesystem
+                        PULSE_LOCAL=""
+                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
+                            if [ -f "\$P/\$SIGNING_SCRIPT" ]; then
+                                PULSE_LOCAL="\$P"
+                                break
+                            fi
+                        done
+
+                        if [ -n "\$PULSE_LOCAL" ]; then
+                            echo "Using local pulse clone at \$PULSE_LOCAL"
+                            chmod +x "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
+                            bash "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
+                        else
+                            # 2. Try fetching from Gitea (requires network access to 100.89.50.27:30300)
+                            PULSE_TMP="\$(mktemp -d)"
+                            BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
+                            mkdir -p "\$PULSE_TMP/\$(dirname "\$SIGNING_SCRIPT")"
+                            if curl -sf --connect-timeout 5 --max-time 15 "\$BASE_URL/\$SIGNING_SCRIPT" \
+                                    -o "\$PULSE_TMP/\$SIGNING_SCRIPT" 2>/dev/null; then
+                                echo "Fetched generate-dummy-signing.sh from Gitea"
+                                chmod +x "\$PULSE_TMP/\$SIGNING_SCRIPT"
+                                bash "\$PULSE_TMP/\$SIGNING_SCRIPT"
+                            else
+                                echo "WARNING: Cannot reach Gitea and no local pulse clone found"
+                                echo "WARNING: Signing skipped — Archive stage will use stub mode (no real .app)"
+                            fi
+                            rm -rf "\$PULSE_TMP"
+                        fi
                         """
                         }
 
