@@ -280,10 +280,16 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                             fi
                         done
 
+                        run_signing_script() {
+                            local SCRIPT_PATH="\$1"
+                            # Call with --generate flag (non-interactive) and
+                            # auto-confirm the "Proceed?" prompt by piping 'y'
+                            echo "y" | bash "\$SCRIPT_PATH" --generate
+                        }
+
                         if [ -n "\$PULSE_LOCAL" ]; then
                             echo "Using local pulse clone at \$PULSE_LOCAL"
-                            chmod +x "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
-                            bash "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
+                            run_signing_script "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
                         else
                             # 2. Try fetching from Gitea (requires network access to 100.89.50.27:30300)
                             PULSE_TMP="\$(mktemp -d)"
@@ -292,8 +298,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                             if curl -sf --connect-timeout 5 --max-time 15 "\$BASE_URL/\$SIGNING_SCRIPT" \
                                     -o "\$PULSE_TMP/\$SIGNING_SCRIPT" 2>/dev/null; then
                                 echo "Fetched generate-dummy-signing.sh from Gitea"
-                                chmod +x "\$PULSE_TMP/\$SIGNING_SCRIPT"
-                                bash "\$PULSE_TMP/\$SIGNING_SCRIPT"
+                                run_signing_script "\$PULSE_TMP/\$SIGNING_SCRIPT"
                             else
                                 echo "WARNING: Cannot reach Gitea and no local pulse clone found"
                                 echo "WARNING: Signing skipped — Archive stage will use stub mode (no real .app)"
