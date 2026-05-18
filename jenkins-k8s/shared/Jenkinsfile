@@ -288,11 +288,18 @@ set -eo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
 PULSE_DIR="\$(mktemp -d)"
-git -c http.connectTimeout=10 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
-    clone --depth 1 --single-branch --branch master \\
-    "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
-    "\$PULSE_DIR" 2>/dev/null \\
-  || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
+for SCRIPT in \
+    "jenkins-k8s/shared/zip-logs.sh" \
+    "jenkins-k8s/shared/extract-build-errors.sh" \
+    "jenkins-k8s/shared/llm-analysis.sh"; do
+    mkdir -p "\$PULSE_DIR/\$(dirname "\$SCRIPT")"
+    curl -sf --max-time 20 \
+        "\$BASE_URL/\$SCRIPT" \
+        -o "\$PULSE_DIR/\$SCRIPT" 2>/dev/null \
+      || { echo "Cannot fetch \$SCRIPT from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+done
+chmod +x "\$PULSE_DIR/jenkins-k8s/shared/"*.sh
 
 bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
 
@@ -325,6 +332,25 @@ rm -rf "\$PULSE_DIR"
                 if (params.NOTIFY_EMAIL?.trim()) {
                     def duration  = currentBuild.durationString ?: 'N/A'
                     def llmTrunc  = llmReport.size() > 8000 ? llmReport.take(8000) + '\n\n...(truncated — see llm-analysis.md artifact)' : llmReport
+                    def testSummary = 'No test data'
+                    try {
+                        def tr = currentBuild.testResultAction
+                        if (tr) {
+                            def passed = tr.totalCount - tr.failCount - tr.skipCount
+                            testSummary = "${passed} passed · ${tr.failCount} failed · ${tr.skipCount} skipped (${tr.totalCount} total)"
+                        }
+                    } catch(ignored) {}
+                    def completedStages = ''
+                    try {
+                        def allStages = currentBuild.getExecution().getPipelineNodes()
+                        completedStages = allStages
+                            .findAll { it.getTypeDisplayName() == 'Stage' && it.getError() == null && it.getDisplayName() != env.FAILED_STAGE }
+                            .collect { "✅ ${it.getDisplayName()}" }
+                            .join(' → ')
+                        if (completedStages) completedStages += " → ❌ ${env.FAILED_STAGE ?: 'Unknown'}"
+                    } catch(ignored) {
+                        completedStages = "Failed at: ${env.FAILED_STAGE ?: 'Unknown'}"
+                    }
                     emailext(
                         subject: "❌ Android FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} — Stage: ${env.FAILED_STAGE ?: 'Unknown'}",
                         mimeType: 'text/html',
@@ -359,6 +385,8 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <tr><td class="lbl">Agent</td><td>android-agent (k8s)</td></tr>
 <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
 <tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+<tr><td class="lbl">&#129514; Tests</td><td>${testSummary}</td></tr>
+<tr><td class="lbl">&#128260; Stages</td><td style="font-size:12px;">${completedStages}</td></tr>
 </table>
 <div class="btns">
 <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>

@@ -598,11 +598,18 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         PULSE_DIR="\$(mktemp -d)"
-                        git -c http.connectTimeout=10 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
-    clone --depth 1 --single-branch --branch master \\
-                            "http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse.git" \\
-                            "\$PULSE_DIR" 2>/dev/null \\
-                          || { echo "Cannot clone pulse from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+                        BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
+                        for SCRIPT in \
+                            "jenkins-k8s/shared/zip-logs.sh" \
+                            "jenkins-k8s/shared/extract-build-errors.sh" \
+                            "jenkins-k8s/shared/llm-analysis.sh"; do
+                            mkdir -p "\$PULSE_DIR/\$(dirname "\$SCRIPT")"
+                            curl -sf --max-time 20 \
+                                "\$BASE_URL/\$SCRIPT" \
+                                -o "\$PULSE_DIR/\$SCRIPT" 2>/dev/null \
+                              || { echo "Cannot fetch \$SCRIPT from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+                        done
+                        chmod +x "\$PULSE_DIR/jenkins-k8s/shared/"*.sh
 
                         bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
 
@@ -663,6 +670,25 @@ React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages."
                         }
                         def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
                         def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
+                        def testSummary = 'No test data'
+                        try {
+                            def tr = currentBuild.testResultAction
+                            if (tr) {
+                                def passed = tr.totalCount - tr.failCount - tr.skipCount
+                                testSummary = "${passed} passed · ${tr.failCount} failed · ${tr.skipCount} skipped (${tr.totalCount} total)"
+                            }
+                        } catch(ignored) {}
+                        def completedStages = ''
+                        try {
+                            def allStages = currentBuild.getExecution().getPipelineNodes()
+                            completedStages = allStages
+                                .findAll { it.getTypeDisplayName() == 'Stage' && it.getError() == null && it.getDisplayName() != env.FAILED_STAGE }
+                                .collect { "✅ ${it.getDisplayName()}" }
+                                .join(' → ')
+                            if (completedStages) completedStages += " → ❌ ${env.FAILED_STAGE ?: 'Unknown'}"
+                        } catch(ignored) {
+                            completedStages = "Failed at: ${env.FAILED_STAGE ?: 'Unknown'}"
+                        }
                         def codeStyle    = 'background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:6px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:500px;overflow-y:auto;'
                         def secStyle     = 'border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-top:24px;font-size:14px;font-weight:700;'
                         def llmSection   = """
@@ -697,6 +723,8 @@ React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages."
       <td><b>Failed Stage</b></td>
       <td><b style="color:#cc0000;">${env.FAILED_STAGE ?: 'Unknown'}</b></td>
     </tr>
+      <tr><td class="lbl">&#129514; Tests</td><td>${testSummary}</td></tr>
+      <tr><td class="lbl">&#128260; Stages</td><td style="font-size:12px;">${completedStages}</td></tr>
     <tr>
       <td><b>Console Log</b></td>
       <td><a href="${env.BUILD_URL}console">View full console</a></td>
