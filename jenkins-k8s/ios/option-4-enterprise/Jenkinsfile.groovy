@@ -282,9 +282,16 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
                         run_signing_script() {
                             local SCRIPT_PATH="\$1"
+                            # Copy to a tmpdir (avoids macOS quarantine / TCC on repo paths)
+                            local TMP_SCRIPT="\$(mktemp /tmp/generate-dummy-signing.XXXXXX.sh)"
+                            cp "\$SCRIPT_PATH" "\$TMP_SCRIPT"
+                            chmod +x "\$TMP_SCRIPT"
                             # Call with --generate flag (non-interactive) and
                             # auto-confirm the "Proceed?" prompt by piping 'y'
-                            echo "y" | bash "\$SCRIPT_PATH" --generate
+                            echo "y" | bash "\$TMP_SCRIPT" --generate
+                            local RC=\$?
+                            rm -f "\$TMP_SCRIPT"
+                            return \$RC
                         }
 
                         if [ -n "\$PULSE_LOCAL" ]; then
