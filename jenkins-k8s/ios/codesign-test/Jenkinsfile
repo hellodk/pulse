@@ -1,0 +1,723 @@
+/*
+ * iOS Codesign Test Pipeline
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Two modes, same pipeline:
+ *
+ *  DUMMY  — generates a self-signed test certificate at build time.
+ *            No Apple Developer account required. Tests every step of the
+ *            keychain → codesign → verify chain. Swap creds for REAL mode.
+ *
+ *  REAL   — reads a real P12 + provisioning profile from Jenkins credential
+ *            store and produces a properly signed, exportable IPA.
+ *
+ * To go from DUMMY → REAL:
+ *  1. Upload your P12 to Jenkins as a "Secret File" cred (id: ios-dist-p12)
+ *  2. Add the P12 password as a "Secret Text" cred   (id: ios-dist-p12-pass)
+ *  3. Upload your .mobileprovision as "Secret File"   (id: ios-dist-profile)
+ *  4. Set SIGNING_MODE = real and fill TEAM_ID / EXPORT_METHOD.
+ *
+ * Agent: ios-agent (Mac Mini M3, macOS Tahoe, Xcode 26)
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+pipeline {
+
+    agent { label 'ios-agent' }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    parameters {
+        choice(
+            name: 'SIGNING_MODE',
+            choices: ['dummy', 'real'],
+            description: '''dummy = self-signed test cert generated at build time (no Apple account needed)
+real  = use P12 + provisioning profile from Jenkins credentials'''
+        )
+
+        /* ── REAL mode credentials ─────────────────────────── */
+        string(
+            name: 'CERT_CREDENTIAL_ID',
+            defaultValue: 'ios-dist-p12',
+            description: '[real] Jenkins Secret File cred ID for your .p12 certificate'
+        )
+        string(
+            name: 'CERT_PASS_CREDENTIAL_ID',
+            defaultValue: 'ios-dist-p12-pass',
+            description: '[real] Jenkins Secret Text cred ID for the .p12 password'
+        )
+        string(
+            name: 'PROFILE_CREDENTIAL_ID',
+            defaultValue: 'ios-dist-profile',
+            description: '[real] Jenkins Secret File cred ID for your .mobileprovision'
+        )
+        string(
+            name: 'TEAM_ID',
+            defaultValue: '',
+            description: '[real] Apple Developer Team ID (10-char, e.g. ABCD123456)'
+        )
+        choice(
+            name: 'EXPORT_METHOD',
+            choices: ['development', 'ad-hoc', 'enterprise', 'app-store'],
+            description: '[real] IPA export method'
+        )
+
+        /* ── App identity ──────────────────────────────────── */
+        string(
+            name: 'BUNDLE_ID',
+            defaultValue: 'com.test.retrorampage',
+            description: 'Bundle identifier (must match provisioning profile in real mode)'
+        )
+
+        /* ── Notifications ─────────────────────────────────── */
+        string(
+            name: 'NOTIFY_EMAIL',
+            defaultValue: 'reject@hellodk.io',
+            description: 'Recipient email(s) — comma-separated'
+        )
+        string(
+            name: 'LLM_ENDPOINT_A',
+            defaultValue: 'http://100.89.50.27:11434',
+            description: 'Primary Ollama endpoint for LLM failure analysis'
+        )
+        string(
+            name: 'LLM_ENDPOINT_B',
+            defaultValue: 'http://100.104.14.62:21434',
+            description: 'Secondary llama.cpp endpoint'
+        )
+    }
+
+    environment {
+        APP_NAME       = 'RetroRampage'
+        SCHEME         = 'RetroRampage'
+        PROJECT_FILE   = 'RetroRampage.xcodeproj'
+        BUILD_DIR      = "${WORKSPACE}/build"
+        REPORTS_DIR    = "${WORKSPACE}/reports"
+        ARCHIVE_PATH   = "${WORKSPACE}/build/RetroRampage.xcarchive"
+        IPA_DIR        = "${WORKSPACE}/build/ipa"
+
+        // Temp keychain — unique per build, cleaned up in post.always
+        KEYCHAIN_NAME  = "jenkins-codesign-${BUILD_NUMBER}.keychain-db"
+        KEYCHAIN_PASS  = "jenkins-${BUILD_NUMBER}-temp"
+
+        // Cert CN used in dummy mode (must match what we import)
+        DUMMY_CERT_CN  = "Apple Development: Jenkins Dummy (Build ${BUILD_NUMBER})"
+    }
+
+    stages {
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Checkout') {
+            steps {
+                git url: 'https://github.com/nicklockwood/RetroRampage.git', branch: 'master'
+                sh 'mkdir -p "${BUILD_DIR}" "${REPORTS_DIR}"'
+                script {
+                    env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Setup Keychain') {
+            steps {
+                script {
+                    if (params.SIGNING_MODE == 'dummy') {
+
+                        // ── DUMMY: generate self-signed cert with OpenSSL ──────
+                        sh '''#!/bin/bash
+set -euo pipefail
+
+echo "=== Generating test signing identity ==="
+TMPDIR_CERTS="$(mktemp -d)"
+trap "rm -rf $TMPDIR_CERTS" EXIT
+
+# Root CA (not imported to system; just signs our leaf cert)
+openssl req -x509 -newkey rsa:4096 \
+    -keyout "${TMPDIR_CERTS}/ca.key" \
+    -out    "${TMPDIR_CERTS}/ca.crt" \
+    -days 365 -nodes \
+    -subj "/CN=Jenkins Test CA/O=Jenkins CI/OU=iOS/C=US" \
+    2>/dev/null
+
+# Leaf signing key
+openssl genrsa -out "${TMPDIR_CERTS}/signing.key" 2048 2>/dev/null
+
+# CSR — CN must look like an Apple cert so Xcode recognises the type
+openssl req -new \
+    -key  "${TMPDIR_CERTS}/signing.key" \
+    -out  "${TMPDIR_CERTS}/signing.csr" \
+    -subj "/CN=${DUMMY_CERT_CN}/O=Jenkins/OU=iOS/C=US" \
+    2>/dev/null
+
+# Sign CSR with the test CA, adding code-signing extensions
+openssl x509 -req \
+    -in      "${TMPDIR_CERTS}/signing.csr" \
+    -CA      "${TMPDIR_CERTS}/ca.crt" \
+    -CAkey   "${TMPDIR_CERTS}/ca.key" \
+    -CAcreateserial \
+    -out     "${TMPDIR_CERTS}/signing.crt" \
+    -days 365 \
+    -extfile <(printf '[v3]\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning') \
+    -extensions v3 \
+    2>/dev/null
+
+# Bundle as PKCS12
+openssl pkcs12 -export -legacy \
+    -in      "${TMPDIR_CERTS}/signing.crt" \
+    -inkey   "${TMPDIR_CERTS}/signing.key" \
+    -certfile "${TMPDIR_CERTS}/ca.crt" \
+    -out     "${BUILD_DIR}/dummy-signing.p12" \
+    -passout "pass:${KEYCHAIN_PASS}" \
+    2>/dev/null
+
+echo "  ✓ self-signed cert generated"
+
+# ── Create isolated build keychain ────────────────────────
+security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"
+security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+
+# Import the P12 — allow codesign + xcodebuild to use it without prompts
+security import "${BUILD_DIR}/dummy-signing.p12" \
+    -k "${KEYCHAIN_NAME}" \
+    -P "${KEYCHAIN_PASS}" \
+    -T /usr/bin/codesign \
+    -T /usr/bin/xcodebuild \
+    -T /usr/bin/security \
+    2>/dev/null
+
+# Set key partition list (required since macOS Sierra for headless use)
+security set-key-partition-list \
+    -S apple-tool:,apple:,codesign:,productsign: \
+    -s -k "${KEYCHAIN_PASS}" \
+    "${KEYCHAIN_NAME}" \
+    2>/dev/null
+
+# Prepend to search list so it's checked before login keychain
+CURRENT_KEYCHAINS=$(security list-keychains -d user | tr -d '"' | xargs)
+security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT_KEYCHAINS}
+
+echo "  ✓ keychain created: ${KEYCHAIN_NAME}"
+echo ""
+echo "=== Certificate fingerprint ==="
+openssl x509 -noout -fingerprint -sha256 \
+    -in "${TMPDIR_CERTS}/signing.crt" 2>/dev/null || true
+openssl x509 -noout -subject -dates \
+    -in "${TMPDIR_CERTS}/signing.crt" 2>/dev/null || true
+echo ""
+
+# Save cert summary for the email report
+openssl x509 -noout -text \
+    -in "${TMPDIR_CERTS}/signing.crt" 2>/dev/null \
+    > "${REPORTS_DIR}/cert-details.txt" || true
+
+# Save signing identity name for later stages
+echo "${DUMMY_CERT_CN}" > "${BUILD_DIR}/signing-identity.txt"
+'''
+
+                    } else {
+
+                        // ── REAL: import P12 from Jenkins credential store ─────
+                        withCredentials([
+                            file  (credentialsId: params.CERT_CREDENTIAL_ID,     variable: 'P12_FILE'),
+                            string(credentialsId: params.CERT_PASS_CREDENTIAL_ID, variable: 'P12_PASS')
+                        ]) {
+                            sh '''#!/bin/bash
+set -euo pipefail
+
+echo "=== Importing real signing certificate ==="
+
+security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"
+security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+
+security import "${P12_FILE}" \
+    -k "${KEYCHAIN_NAME}" \
+    -P "${P12_PASS}" \
+    -T /usr/bin/codesign \
+    -T /usr/bin/xcodebuild \
+    -T /usr/bin/security
+
+security set-key-partition-list \
+    -S apple-tool:,apple:,codesign:,productsign: \
+    -s -k "${KEYCHAIN_PASS}" \
+    "${KEYCHAIN_NAME}"
+
+CURRENT_KEYCHAINS=$(security list-keychains -d user | tr -d '"' | xargs)
+security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT_KEYCHAINS}
+
+# Extract identity name from keychain
+IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+    | grep '"' | head -1 | sed 's/.*"\\(.*\\)"/\\1/')
+echo "$IDENTITY" > "${BUILD_DIR}/signing-identity.txt"
+echo "  ✓ imported: $IDENTITY"
+
+# Save cert summary
+security find-certificate -a -p "${KEYCHAIN_NAME}" \
+    | openssl x509 -noout -text 2>/dev/null \
+    > "${REPORTS_DIR}/cert-details.txt" || true
+'''
+                        }
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Install Provisioning Profile') {
+            when { expression { params.SIGNING_MODE == 'real' } }
+            steps {
+                withCredentials([file(credentialsId: params.PROFILE_CREDENTIAL_ID, variable: 'PROFILE_FILE')]) {
+                    sh '''#!/bin/bash
+set -euo pipefail
+
+PROFILE_DIR="${HOME}/Library/MobileDevice/Provisioning Profiles"
+mkdir -p "${PROFILE_DIR}"
+
+# Decode UUID from the profile
+TMP_PLIST=$(mktemp /tmp/profile.XXXXXX.plist)
+security cms -D -i "${PROFILE_FILE}" > "${TMP_PLIST}"
+UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "${TMP_PLIST}")
+NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "${TMP_PLIST}" 2>/dev/null || echo "Unknown")
+EXPIRY=$(/usr/libexec/PlistBuddy -c "Print :ExpirationDate" "${TMP_PLIST}" 2>/dev/null || echo "Unknown")
+rm -f "${TMP_PLIST}"
+
+cp "${PROFILE_FILE}" "${PROFILE_DIR}/${UUID}.mobileprovision"
+
+echo "  ✓ installed profile: ${NAME}"
+echo "    UUID   : ${UUID}"
+echo "    Expires: ${EXPIRY}"
+echo "${UUID}" > "${BUILD_DIR}/profile-uuid.txt"
+echo "${NAME}"  > "${BUILD_DIR}/profile-name.txt"
+'''
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Resolve Dependencies') {
+            steps {
+                sh '''
+                    source ~/.zshrc 2>/dev/null || true
+                    xcodebuild -resolvePackageDependencies \
+                        -project "${PROJECT_FILE}" \
+                        -scheme  "${SCHEME}" \
+                        -clonedSourcePackagesDirPath .spm-cache \
+                        2>&1 | tail -20 || true
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Build Archive') {
+            steps {
+                script {
+                    def signingId = readFile("${BUILD_DIR}/signing-identity.txt").trim()
+
+                    if (params.SIGNING_MODE == 'dummy') {
+                        // Build without signing first (Xcode rejects self-signed certs for archiving)
+                        // We codesign manually in the next stage.
+                        sh """#!/bin/bash
+set -euo pipefail
+source ~/.zshrc 2>/dev/null || true
+
+echo "=== Building archive (unsigned — will sign manually) ==="
+xcodebuild archive \\
+    -project    "\${PROJECT_FILE}" \\
+    -scheme     "\${SCHEME}" \\
+    -configuration Release \\
+    -archivePath "\${ARCHIVE_PATH}" \\
+    -clonedSourcePackagesDirPath .spm-cache \\
+    CODE_SIGN_IDENTITY="" \\
+    CODE_SIGNING_REQUIRED=NO \\
+    CODE_SIGNING_ALLOWED=NO \\
+    PRODUCT_BUNDLE_IDENTIFIER="${params.BUNDLE_ID}" \\
+    2>&1 | grep -E "error:|warning:BUILD|xcodebuild|Archive" | tail -30 || true
+
+echo ""
+echo "Archive built at: \${ARCHIVE_PATH}"
+ls -lh "\${ARCHIVE_PATH}" 2>/dev/null || echo "Archive directory:"
+find "\${ARCHIVE_PATH}" -maxdepth 3 | head -20
+"""
+                    } else {
+                        // Real mode: let Xcode handle signing via provisioning profile
+                        def profileUuid = fileExists("${BUILD_DIR}/profile-uuid.txt") ? readFile("${BUILD_DIR}/profile-uuid.txt").trim() : ''
+                        sh """#!/bin/bash
+set -euo pipefail
+source ~/.zshrc 2>/dev/null || true
+
+echo "=== Building and signing archive ==="
+xcodebuild archive \\
+    -project    "\${PROJECT_FILE}" \\
+    -scheme     "\${SCHEME}" \\
+    -configuration Release \\
+    -archivePath "\${ARCHIVE_PATH}" \\
+    -clonedSourcePackagesDirPath .spm-cache \\
+    DEVELOPMENT_TEAM="${params.TEAM_ID}" \\
+    CODE_SIGN_STYLE=Manual \\
+    CODE_SIGN_IDENTITY="${signingId}" \\
+    PROVISIONING_PROFILE="${profileUuid}" \\
+    PRODUCT_BUNDLE_IDENTIFIER="${params.BUNDLE_ID}" \\
+    OTHER_CODE_SIGN_FLAGS="--keychain \${KEYCHAIN_NAME}" \\
+    2>&1 | grep -E "error:|BUILD|Archive" | tail -30
+
+echo "  ✓ archive complete"
+"""
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Codesign Archive') {
+            when { expression { params.SIGNING_MODE == 'dummy' } }
+            steps {
+                script {
+                    def signingId = readFile("${BUILD_DIR}/signing-identity.txt").trim()
+                    sh """#!/bin/bash
+set -euo pipefail
+
+echo "=== Signing archive binaries with test identity ==="
+echo "Identity: ${signingId}"
+
+# Find all Mach-O binaries inside the archive
+ARCHIVE="\${ARCHIVE_PATH}"
+BINARIES=\$(find "\${ARCHIVE}" -type f \\( -name "*.dylib" -o -name "*.framework" \\) 2>/dev/null)
+MAIN_BINARY=\$(find "\${ARCHIVE}/Products" -type f -perm +0111 2>/dev/null | head -5)
+
+# Sign each binary and framework
+for item in \${BINARIES} \${MAIN_BINARY}; do
+    [ -e "\$item" ] || continue
+    codesign --force \\
+             --sign   "${signingId}" \\
+             --keychain "\${KEYCHAIN_NAME}" \\
+             --timestamp=none \\
+             "\$item" 2>/dev/null && echo "  signed: \$(basename \$item)" || true
+done
+
+# Sign the .app bundle itself (deep sign)
+APP_BUNDLE=\$(find "\${ARCHIVE}/Products" -name "*.app" -maxdepth 4 | head -1)
+if [ -n "\${APP_BUNDLE}" ]; then
+    codesign --force \\
+             --sign   "${signingId}" \\
+             --keychain "\${KEYCHAIN_NAME}" \\
+             --timestamp=none \\
+             --deep \\
+             "\${APP_BUNDLE}" 2>/dev/null
+    echo "  ✓ signed app bundle: \$(basename \${APP_BUNDLE})"
+else
+    echo "  [INFO] no .app bundle found in archive — signing individual binaries only"
+fi
+"""
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Verify Signature') {
+            steps {
+                sh '''#!/bin/bash
+set -euo pipefail
+
+echo "=== Codesign Verification ==="
+
+PASS=0
+FAIL=0
+
+verify_item() {
+    local item="$1"
+    local label=$(basename "$item")
+
+    if codesign --verify --verbose=1 "$item" 2>&1 | grep -q "satisfies"; then
+        echo "  ✅ PASS  $label"
+        ((PASS++)) || true
+    elif codesign --verify --verbose=1 "$item" 2>/dev/null; then
+        echo "  ✅ PASS  $label"
+        ((PASS++)) || true
+    else
+        # Not signed is OK for dummy mode (some binaries skipped)
+        local info
+        info=$(codesign -d --verbose=4 "$item" 2>&1 | head -3 || echo "unsigned")
+        echo "  ⚠  SKIP  $label — $info"
+    fi
+}
+
+# Check .app bundle
+APP_BUNDLE=$(find "${ARCHIVE_PATH}/Products" -name "*.app" -maxdepth 4 | head -1)
+if [ -n "${APP_BUNDLE}" ]; then
+    echo ""
+    echo "App bundle: $(basename ${APP_BUNDLE})"
+    verify_item "${APP_BUNDLE}"
+
+    echo ""
+    echo "Signing identity on bundle:"
+    codesign -d --verbose=4 "${APP_BUNDLE}" 2>&1 | grep -E "Identifier|TeamIdentifier|Authority|Signed Time" || true
+
+    echo ""
+    echo "Entitlements:"
+    codesign -d --entitlements - "${APP_BUNDLE}" 2>/dev/null | head -20 || echo "  (none embedded)"
+fi
+
+# Check individual signed binaries
+echo ""
+echo "Individual binaries:"
+find "${ARCHIVE_PATH}" -type f \( -name "*.dylib" \) | while read -r f; do
+    verify_item "$f"
+done
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Verified : ${PASS}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Save report
+{
+    echo "Codesign Verification Report"
+    echo "Build: ${BUILD_NUMBER}  SHA: ${GIT_SHA}"
+    echo "Mode: ${SIGNING_MODE}"
+    echo "Verified: ${PASS}"
+    echo ""
+    if [ -n "${APP_BUNDLE}" ]; then
+        codesign -d --verbose=4 "${APP_BUNDLE}" 2>&1 || true
+    fi
+} > "${REPORTS_DIR}/codesign-verify.txt"
+'''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Export IPA') {
+            when { expression { params.SIGNING_MODE == 'real' } }
+            steps {
+                script {
+                    def profileName = fileExists("${BUILD_DIR}/profile-name.txt") ? readFile("${BUILD_DIR}/profile-name.txt").trim() : ''
+                    def signingId   = readFile("${BUILD_DIR}/signing-identity.txt").trim()
+                    sh """#!/bin/bash
+set -euo pipefail
+source ~/.zshrc 2>/dev/null || true
+
+mkdir -p "\${IPA_DIR}"
+
+cat > "\${BUILD_DIR}/ExportOptions.plist" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>             <string>${params.EXPORT_METHOD}</string>
+    <key>teamID</key>             <string>${params.TEAM_ID}</string>
+    <key>signingStyle</key>       <string>manual</string>
+    <key>signingCertificate</key> <string>${signingId}</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>${params.BUNDLE_ID}</key>
+        <string>${profileName}</string>
+    </dict>
+    <key>stripSwiftSymbols</key>  <true/>
+    <key>compileBitcode</key>     <false/>
+</dict>
+</plist>
+PLISTEOF
+
+xcodebuild -exportArchive \\
+    -archivePath    "\${ARCHIVE_PATH}" \\
+    -exportPath     "\${IPA_DIR}" \\
+    -exportOptionsPlist "\${BUILD_DIR}/ExportOptions.plist" \\
+    OTHER_CODE_SIGN_FLAGS="--keychain \${KEYCHAIN_NAME}"
+
+IPA=\$(find "\${IPA_DIR}" -name "*.ipa" | head -1)
+echo "  ✓ IPA: \$(basename \${IPA})"
+echo "  Size: \$(du -sh \${IPA} | cut -f1)"
+"""
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ──────────────────────────────────────────────────── */
+        stage('Archive Artifacts') {
+            steps {
+                sh 'zip -r build/RetroRampage.xcarchive.zip build/RetroRampage.xcarchive || true'
+                archiveArtifacts artifacts: 'build/*.zip,build/ipa/*.ipa,reports/**', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+
+        always {
+            // Always clean up the temp keychain — runs even if pipeline is aborted
+            sh '''#!/bin/bash
+CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
+FILTERED=$(echo "${CURRENT}" | tr ' ' '\\n' | grep -v "${KEYCHAIN_NAME}" | tr '\\n' ' ')
+security list-keychains -d user -s ${FILTERED} 2>/dev/null || true
+security delete-keychain "${KEYCHAIN_NAME}" 2>/dev/null && echo "Keychain removed" || true
+rm -f "${BUILD_DIR}/dummy-signing.p12" 2>/dev/null || true
+'''
+        }
+
+        success {
+            script {
+                def signingId  = fileExists("${BUILD_DIR}/signing-identity.txt") ? readFile("${BUILD_DIR}/signing-identity.txt").trim() : 'N/A'
+                def certDetail = fileExists("${REPORTS_DIR}/cert-details.txt")   ? readFile("${REPORTS_DIR}/cert-details.txt").take(1500) : 'Not available'
+                def verifyTxt  = fileExists("${REPORTS_DIR}/codesign-verify.txt") ? readFile("${REPORTS_DIR}/codesign-verify.txt").take(2000) : 'Not available'
+                def mode       = params.SIGNING_MODE == 'dummy' ? '🧪 Dummy (self-signed)' : '🔐 Real (org certificate)'
+                def duration   = currentBuild.durationString ?: 'N/A'
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(
+                        subject: "✅ iOS Codesign [${params.SIGNING_MODE.toUpperCase()}] PASSED — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL,
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'reports/**',
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.code{background:#0d1117;color:#c9d1d9;padding:14px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#16a34a;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;}
+.dummy{background:#fffbeb;color:#92400e;border:1px solid #fcd34d;}
+.real{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;}
+</style></head><body><div class="wrap">
+<div class="hdr">
+  <h1>&#9989; iOS Codesign Pipeline Passed</h1>
+  <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+</div>
+<div class="body">
+<table>
+<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+<tr><td class="lbl">Agent</td><td>${env.NODE_NAME} (Mac Mini M3, Xcode 26)</td></tr>
+<tr><td class="lbl">Git SHA</td><td><code>${env.GIT_SHA}</code></td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+<tr><td class="lbl">Signing Mode</td><td><span class="badge ${params.SIGNING_MODE}">${mode}</span></td></tr>
+<tr><td class="lbl">Signing Identity</td><td><code>${signingId}</code></td></tr>
+<tr><td class="lbl">Bundle ID</td><td><code>${params.BUNDLE_ID}</code></td></tr>
+</table>
+<div class="btns">
+  <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+  <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+  <a href="${env.BUILD_URL}console" class="btn b2">Console</a>
+</div>
+<div class="sec">&#128274; Codesign Verification</div>
+<div class="code">${verifyTxt}</div>
+<div class="sec">&#128196; Certificate Details</div>
+<div class="code">${certDetail}</div>
+${params.SIGNING_MODE == 'dummy' ? '<p style="margin-top:12px;font-size:12px;color:#92400e;background:#fffbeb;padding:10px 14px;border-radius:6px;border:1px solid #fcd34d;">&#9888; Dummy mode: self-signed certificate — not trusted by Apple, not installable on real devices. To use with real certificates, set SIGNING_MODE=real and provide your P12 + provisioning profile credentials.</p>' : ''}
+</div>
+<div class="ftr">Jenkins CI &middot; iOS Codesign Test &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
+        }
+
+        failure {
+            script {
+                def llmReport = 'LLM analysis not available.'
+                try {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'gitea-pulse-creds',
+                            usernameVariable: 'GITEA_USR',
+                            passwordVariable: 'GITEA_PSW'
+                        )]) {
+                            sh """#!/bin/bash
+set -eo pipefail
+PULSE_DIR="\$(mktemp -d)"
+BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
+for SCRIPT in jenkins-k8s/shared/zip-logs.sh jenkins-k8s/shared/extract-build-errors.sh jenkins-k8s/shared/llm-analysis.sh; do
+    mkdir -p "\$PULSE_DIR/\$(dirname "\$SCRIPT")"
+    curl -sf --max-time 20 "\$BASE_URL/\$SCRIPT" -o "\$PULSE_DIR/\$SCRIPT" 2>/dev/null \\
+      || { echo "Cannot fetch \$SCRIPT"; rm -rf "\$PULSE_DIR"; exit 1; }
+done
+chmod +x "\$PULSE_DIR/jenkins-k8s/shared/"*.sh
+bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="iOS-Codesign"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh" || true
+rm -rf "\$PULSE_DIR"
+"""
+                        }
+                    }
+                    if (fileExists('llm-analysis.md')) { llmReport = readFile('llm-analysis.md') }
+                } catch (e) { llmReport = "LLM analysis failed: ${e.message}" }
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    def llmTrunc = llmReport.size() > 6000 ? llmReport.take(6000) + '\n...(truncated)' : llmReport
+                    emailext(
+                        subject: "❌ iOS Codesign [${params.SIGNING_MODE.toUpperCase()}] FAILED — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL,
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'llm-analysis.md,build-logs-*.zip',
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#c0392b,#96281b);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.fail td{background:#fff5f5!important;color:#c0392b;font-weight:700;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.code{background:#0d1117;color:#c9d1d9;padding:14px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto;}
+.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#0078d4;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr">
+  <h1>&#10060; iOS Codesign Pipeline Failed</h1>
+  <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+</div>
+<div class="body">
+<table>
+<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+<tr><td class="lbl">Duration</td><td>${currentBuild.durationString ?: 'N/A'}</td></tr>
+<tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+<tr><td class="lbl">Signing Mode</td><td>${params.SIGNING_MODE}</td></tr>
+</table>
+<div style="margin-top:14px;">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}console" class="btn b2">Console</a>
+</div>
+<div class="sec">&#129302; LLM Failure Analysis</div>
+<div class="code">${llmTrunc}</div>
+</div>
+<div class="ftr">Jenkins CI &middot; iOS Codesign Test &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
+        }
+    }
+}
