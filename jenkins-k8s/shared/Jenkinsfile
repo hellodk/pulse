@@ -21,11 +21,8 @@ pipeline {
     }
 
     environment {
-        ANDROID_HOME  = '/opt/android-sdk'
-        SONAR_TOKEN   = credentials('sonar-token')
-        NEXUS_CREDS   = credentials('nexus-creds')
-        JFROG_CREDS   = credentials('jfrog-creds')
-        FAILED_STAGE  = ''
+        ANDROID_HOME = '/opt/android-sdk'
+        FAILED_STAGE = ''
     }
 
     stages {
@@ -90,7 +87,14 @@ pipeline {
 
         stage('Build Release APK') {
             steps {
-                sh './gradlew assembleRelease --stacktrace || true'
+                sh '''
+                    ./gradlew assembleRelease \
+                        -Pandroid.injected.signing.store.file="" \
+                        -Pandroid.injected.signing.key.alias="" \
+                        -Pandroid.injected.signing.store.password="" \
+                        -Pandroid.injected.signing.key.password="" \
+                        --stacktrace || true
+                '''
             }
             post {
                 always {
@@ -231,14 +235,18 @@ pipeline {
                         script: "find app/build/outputs/apk/debug -name '*.apk' | head -1",
                         returnStdout: true
                     ).trim()
-                    sh """
-                        cp "${apkPath}" "${env.APK_FILENAME}"
-                        curl -sf \
-                            -u "${env.NEXUS_CREDS_USR}:${env.NEXUS_CREDS_PSW}" \
-                            --upload-file "${env.APK_FILENAME}" \
-                            "http://nexus.utilities.svc.cluster.local:8081/repository/android-releases/${env.APK_FILENAME}"
-                        echo "Uploaded to Nexus: ${env.APK_FILENAME}"
-                    """
+                    sh "cp '${apkPath}' '${env.APK_FILENAME}'"
+                    withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                            usernameVariable: 'NEXUS_USR', passwordVariable: 'NEXUS_PSW')]) {
+                        sh '''
+                            cp "${APK_FILENAME}" /tmp/ 2>/dev/null || true
+                            curl -sf \
+                                -u "${NEXUS_USR}:${NEXUS_PSW}" \
+                                --upload-file "${APK_FILENAME}" \
+                                "http://nexus.utilities.svc.cluster.local:8081/repository/android-releases/${APK_FILENAME}"
+                            echo "Uploaded to Nexus: ${APK_FILENAME}"
+                        '''
+                    }
                 }
                 archiveArtifacts artifacts: "${env.APK_FILENAME}", fingerprint: true
             }
@@ -247,14 +255,17 @@ pipeline {
 
         stage('JFrog Upload') {
             steps {
-                sh """
-                    curl -sf \
-                        -u '${env.JFROG_CREDS_USR}:${env.JFROG_CREDS_PSW}' \
-                        -X PUT \
-                        --upload-file "${env.APK_FILENAME}" \
-                        "http://10.105.205.92:8082/artifactory/example-repo-local/android/${env.APK_FILENAME}" \
-                        && echo "Uploaded to JFrog: ${env.APK_FILENAME}"
-                """
+                withCredentials([usernamePassword(credentialsId: 'jfrog-creds',
+                        usernameVariable: 'JFROG_USR', passwordVariable: 'JFROG_PSW')]) {
+                    sh '''
+                        curl -sf \
+                            -u "${JFROG_USR}:${JFROG_PSW}" \
+                            -X PUT \
+                            --upload-file "${APK_FILENAME}" \
+                            "http://10.105.205.92:8082/artifactory/example-repo-local/android/${APK_FILENAME}"
+                        echo "Uploaded to JFrog: ${APK_FILENAME}"
+                    '''
+                }
             }
             post { failure { script { env.FAILED_STAGE = 'JFrog Upload' } } }
         }
