@@ -258,62 +258,109 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                     if (params.DUMMY_SIGNING) {
 
                         // ── Dummy path (no Apple account) ─────────────────────
-                        echo "DUMMY_SIGNING=true — generating self-signed cert..."
+                        // Inline implementation of generate-dummy-signing.sh --generate
+                        // Avoids macOS TCC restrictions on ~/Documents paths and
+                        // Gitea NodePort connectivity issues from Mac Mini agents.
+                        echo "DUMMY_SIGNING=true — generating inline self-signed cert..."
 
-                        withCredentials([usernamePassword(
-                            credentialsId: 'gitea-pulse-creds',
-                            usernameVariable: 'GITEA_USR',
-                            passwordVariable: 'GITEA_PSW'
-                        )]) {
-                            sh """#!/bin/bash
+                        sh """#!/bin/bash
                         set -euo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        SIGNING_SCRIPT="jenkins-k8s/ios/option-4-enterprise/generate-dummy-signing.sh"
+                        TEAM_ID="DUMTEAM01"
+                        TEAM_NAME="YourBank Ltd"
+                        APP_NAME="${env.APP_NAME}"
+                        BUNDLE_ID="${env.BUNDLE_ID}"
+                        CERT_CN="iPhone Distribution: \${TEAM_NAME} (\${TEAM_ID})"
+                        CERT_VALIDITY_DAYS=365
+                        KEYCHAIN_NAME="${env.DUMMY_KEYCHAIN}"
+                        KEYCHAIN_PASS="dummy-kc-\${BUILD_NUMBER}"
+                        CERT_PASS="DummyCertPass123!"
+                        OUTPUT_DIR="\${TMPDIR:-/tmp}/banknow-dummy-signing-\${BUILD_NUMBER}"
+                        mkdir -p "\${OUTPUT_DIR}"
 
-                        # 1. Try local pulse clone on agent filesystem
-                        PULSE_LOCAL=""
-                        for P in "\${HOME:-/Users/dk}/Documents/git/pulse" "/home/dk/Documents/git/pulse"; do
-                            if [ -f "\$P/\$SIGNING_SCRIPT" ]; then
-                                PULSE_LOCAL="\$P"
-                                break
-                            fi
-                        done
+                        echo "── Generating self-signed CA ─────────────────────────"
+                        openssl genrsa -out "\${OUTPUT_DIR}/ca.key" 2048 2>/dev/null
+                        openssl req -new -x509 \\
+                            -key  "\${OUTPUT_DIR}/ca.key" \\
+                            -out  "\${OUTPUT_DIR}/ca.crt" \\
+                            -days "\${CERT_VALIDITY_DAYS}" \\
+                            -subj "/C=US/ST=California/O=\${TEAM_NAME} Internal CA/CN=\${TEAM_NAME} Root CA" \\
+                            2>/dev/null
+                        echo "CA generated."
 
-                        run_signing_script() {
-                            local SCRIPT_PATH="\$1"
-                            # Copy to a tmpdir (avoids macOS quarantine / TCC on repo paths)
-                            local TMP_SCRIPT="\$(mktemp /tmp/generate-dummy-signing.XXXXXX.sh)"
-                            cp "\$SCRIPT_PATH" "\$TMP_SCRIPT"
-                            chmod +x "\$TMP_SCRIPT"
-                            # Call with --generate flag (non-interactive) and
-                            # auto-confirm the "Proceed?" prompt by piping 'y'
-                            echo "y" | bash "\$TMP_SCRIPT" --generate
-                            local RC=\$?
-                            rm -f "\$TMP_SCRIPT"
-                            return \$RC
-                        }
+                        echo "── Generating distribution cert ──────────────────────"
+                        openssl genrsa -out "\${OUTPUT_DIR}/dist.key" 2048 2>/dev/null
+                        openssl req -new \\
+                            -key  "\${OUTPUT_DIR}/dist.key" \\
+                            -out  "\${OUTPUT_DIR}/dist.csr" \\
+                            -subj "/C=US/ST=California/O=\${TEAM_NAME}/CN=\${CERT_CN}" \\
+                            2>/dev/null
+                        openssl x509 -req \\
+                            -in         "\${OUTPUT_DIR}/dist.csr" \\
+                            -CA         "\${OUTPUT_DIR}/ca.crt" \\
+                            -CAkey      "\${OUTPUT_DIR}/ca.key" \\
+                            -CAcreateserial \\
+                            -out        "\${OUTPUT_DIR}/dist.crt" \\
+                            -days       "\${CERT_VALIDITY_DAYS}" \\
+                            2>/dev/null
+                        echo "Distribution cert generated."
 
-                        if [ -n "\$PULSE_LOCAL" ]; then
-                            echo "Using local pulse clone at \$PULSE_LOCAL"
-                            run_signing_script "\$PULSE_LOCAL/\$SIGNING_SCRIPT"
-                        else
-                            # 2. Try fetching from Gitea (requires network access to 100.89.50.27:30300)
-                            PULSE_TMP="\$(mktemp -d)"
-                            BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
-                            mkdir -p "\$PULSE_TMP/\$(dirname "\$SIGNING_SCRIPT")"
-                            if curl -sf --connect-timeout 5 --max-time 15 "\$BASE_URL/\$SIGNING_SCRIPT" \
-                                    -o "\$PULSE_TMP/\$SIGNING_SCRIPT" 2>/dev/null; then
-                                echo "Fetched generate-dummy-signing.sh from Gitea"
-                                run_signing_script "\$PULSE_TMP/\$SIGNING_SCRIPT"
-                            else
-                                echo "WARNING: Cannot reach Gitea and no local pulse clone found"
-                                echo "WARNING: Signing skipped — Archive stage will use stub mode (no real .app)"
-                            fi
-                            rm -rf "\$PULSE_TMP"
-                        fi
+                        echo "── Creating PKCS#12 bundle ───────────────────────────"
+                        openssl pkcs12 -export \\
+                            -out      "\${OUTPUT_DIR}/dist.p12" \\
+                            -inkey    "\${OUTPUT_DIR}/dist.key" \\
+                            -in       "\${OUTPUT_DIR}/dist.crt" \\
+                            -certfile "\${OUTPUT_DIR}/ca.crt" \\
+                            -passout  "pass:\${CERT_PASS}" \\
+                            -legacy 2>/dev/null || \\
+                        openssl pkcs12 -export \\
+                            -out      "\${OUTPUT_DIR}/dist.p12" \\
+                            -inkey    "\${OUTPUT_DIR}/dist.key" \\
+                            -in       "\${OUTPUT_DIR}/dist.crt" \\
+                            -certfile "\${OUTPUT_DIR}/ca.crt" \\
+                            -passout  "pass:\${CERT_PASS}" \\
+                            2>/dev/null
+                        echo "PKCS#12 bundle created."
+
+                        echo "── Setting up keychain ───────────────────────────────"
+                        security delete-keychain "\${KEYCHAIN_NAME}" 2>/dev/null || true
+                        security create-keychain -p "\${KEYCHAIN_PASS}" "\${KEYCHAIN_NAME}"
+                        security list-keychains -d user -s "\${KEYCHAIN_NAME}" login.keychain
+                        security default-keychain -s "\${KEYCHAIN_NAME}"
+                        security unlock-keychain  -p "\${KEYCHAIN_PASS}" "\${KEYCHAIN_NAME}"
+                        security set-keychain-settings -lut 7200 "\${KEYCHAIN_NAME}"
+
+                        security import "\${OUTPUT_DIR}/dist.p12" \\
+                            -k "\${KEYCHAIN_NAME}" \\
+                            -P "\${CERT_PASS}" \\
+                            -T /usr/bin/codesign \\
+                            -T /usr/bin/productbuild \\
+                            -f pkcs12 2>/dev/null
+
+                        # Tahoe: grant codesign partition access
+                        security set-key-partition-list \\
+                            -S apple-tool:,apple:,codesign: \\
+                            -s -k "\${KEYCHAIN_PASS}" \\
+                            "\${KEYCHAIN_NAME}" 2>/dev/null || true
+
+                        echo "Keychain '\${KEYCHAIN_NAME}' ready."
+                        security find-identity -v -p codesigning "\${KEYCHAIN_NAME}" 2>/dev/null || true
+
+                        # Create fake provisioning profile
+                        PROFILE_UUID="\$(uuidgen)"
+                        mkdir -p "\$HOME/Library/MobileDevice/Provisioning Profiles"
+                        openssl smime -sign \\
+                            -in <(printf '<?xml version="1.0"?><!DOCTYPE plist><plist version="1.0"><dict><key>UUID</key><string>%s</string><key>TeamIdentifier</key><array><string>%s</string></array><key>ProvisionsAllDevices</key><true/><key>ExpirationDate</key><date>2027-01-01T00:00:00Z</date></dict></plist>' "\${PROFILE_UUID}" "\${TEAM_ID}") \\
+                            -out "\$HOME/Library/MobileDevice/Provisioning Profiles/\${PROFILE_UUID}.mobileprovision" \\
+                            -signer "\${OUTPUT_DIR}/dist.crt" \\
+                            -inkey  "\${OUTPUT_DIR}/dist.key" \\
+                            -certfile "\${OUTPUT_DIR}/ca.crt" \\
+                            -outform DER -nodetach 2>/dev/null || true
+
+                        rm -rf "\${OUTPUT_DIR}"
+                        echo "Dummy signing setup complete."
                         """
-                        }
 
                     } else {
 
