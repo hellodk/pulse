@@ -43,7 +43,17 @@ pipeline {
             }
         }
         stage('Validate') {
-            steps { sh 'source ~/.bashrc 2>/dev/null || true; node --version; npm --version; pod --version; xcodebuild -version' }
+            steps {
+                sh '''#!/bin/bash
+                    source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e
+                    echo "=== Tool versions ==="
+                    node --version        || echo "MISSING: node"
+                    npm --version         || echo "MISSING: npm"
+                    pod --version         || echo "MISSING: pod (CocoaPods)"
+                    xcodebuild -version   || echo "MISSING: xcodebuild"
+                    echo "=== Done ==="
+                '''
+            }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
@@ -182,7 +192,16 @@ rm -rf "\$PULSE_DIR"
                 if (params.NOTIFY_EMAIL?.trim()) {
                     def duration  = currentBuild.durationString ?: 'N/A'
                     def gitSha    = env.GIT_SHA ?: 'N/A'
-                    def llmTrunc  = llmReport.size() > 8000 ? llmReport.take(8000) + '\n...(truncated — see llm-analysis.md artifact)' : llmReport
+                    def errorSnippet = fileExists('build-error-report.txt') ? readFile('build-error-report.txt').take(2000) : 'Not captured — LLM analysis may have failed to run.'
+                    def llmBody  = llmReport
+                    def llmSugg  = ''
+                    if (llmReport.contains('## Improvement Suggestions')) {
+                        def idx  = llmReport.indexOf('## Improvement Suggestions')
+                        llmBody  = llmReport.take(idx).trim()
+                        llmSugg  = llmReport.substring(idx).trim()
+                    }
+                    def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
+                    def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
                     def testSummary = 'No test data'
                     try {
                         def tr = currentBuild.testResultAction

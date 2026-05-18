@@ -45,8 +45,8 @@ pipeline {
 
         stage('Validate') {
             steps {
-                sh '''
-                    source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
+                sh '''#!/bin/bash
+                    source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e
                     echo "=== Tool versions ==="
                     xcodebuild -version            || echo "MISSING: xcodebuild"
                     swift --version                || echo "MISSING: swift"
