@@ -756,17 +756,12 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
 
                     try {
                         timeout(time: 5, unit: 'MINUTES') {
-                            withCredentials([usernamePassword(
-                                credentialsId: 'gitea-pulse-creds',
-                                usernameVariable: 'GITEA_USR',
-                                passwordVariable: 'GITEA_PSW'
-                            )]) {
                                 sh """#!/bin/bash -l
                         set -eo pipefail
                         export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
                         PULSE_DIR="\$(mktemp -d)"
-                        BASE_URL="http://\${GITEA_USR}:\${GITEA_PSW}@100.89.50.27:30300/dk/pulse/raw/branch/master"
+                        BASE_URL="http://100.89.50.27:30881/userContent/shared"
                         for SCRIPT in \
                             "jenkins-k8s/shared/zip-logs.sh" \
                             "jenkins-k8s/shared/extract-build-errors.sh" \
@@ -775,7 +770,7 @@ false — use npm  (fallback if pnpm not available or lockfile not migrated)''')
                             curl -sf --max-time 20 \
                                 "\$BASE_URL/\$SCRIPT" \
                                 -o "\$PULSE_DIR/\$SCRIPT" 2>/dev/null \
-                              || { echo "Cannot fetch \$SCRIPT from Gitea — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+                              || { echo "Cannot fetch \$SCRIPT from Jenkins — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
                         done
                         chmod +x "\$PULSE_DIR/jenkins-k8s/shared/"*.sh
 
@@ -804,7 +799,6 @@ React Native app using ${params.USE_PNPM ? 'pnpm' : 'npm'} for node packages."
 
                         rm -rf "\$PULSE_DIR"
                         """
-                            }
                         }
                         archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
 
