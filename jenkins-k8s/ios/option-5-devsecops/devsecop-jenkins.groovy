@@ -315,6 +315,15 @@ kubectl get configmap ${HELM_RELEASE}-config -n ${HELM_NAMESPACE} -o yaml \
 diff -u rendered/live-cm.yaml rendered/incoming-cm.yaml \
   > ${PREVIEW_DIR}/configmap-diff.txt || true
 
+# Side-by-side HTML diff
+python3 jenkins-k8s/shared/generate-diff-html.py \
+    rendered/live-cm.yaml \
+    rendered/incoming-cm.yaml \
+    ${PREVIEW_DIR}/configmap-diff.html \
+    "ConfigMap Diff" \
+    "Live (deployed)" \
+    "Incoming (helm template)" 2>/dev/null || true
+
 [ -s "${PREVIEW_DIR}/configmap-diff.txt" ] \
   && echo "  → ConfigMap diff: $(grep -c "^[+-]" ${PREVIEW_DIR}/configmap-diff.txt) line(s) changed" \
   || echo "  → ConfigMap diff: no changes"
@@ -811,20 +820,34 @@ cat > ${PREVIEW_DIR}/index.html <<HTMLEOF
       </div>
     </details>
 
-    <!-- ConfigMap Diff — collapsed -->
+    <!-- ConfigMap Diff — collapsed, side-by-side -->
     <details>
       <summary>&#128462; ConfigMap Diff</summary>
       <div class="section-body">
-        <pre>$(cat ${PREVIEW_DIR}/configmap-diff.txt 2>/dev/null || echo 'No changes')</pre>
+        <style>
+          .diff-wrap{margin:0;}.diff-title{display:none;}
+          .diff-legend{margin-bottom:8px;font-size:12px;display:flex;gap:12px;align-items:center;}
+          .leg{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:3px;font-weight:600;font-size:11px;}
+          .leg-del{background:#f8d7da;color:#842029;}.leg-add{background:#d1e7dd;color:#0f5132;}.leg-chg{background:#fff3cd;color:#664d03;}
+          .diff-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'SFMono-Regular','Consolas',monospace;}
+          .diff-table td,.diff-table th{padding:2px 8px;white-space:pre;border:none;}
+          .diff-table td.ln{color:#9ca3af;width:36px;text-align:right;user-select:none;border-right:1px solid #e5e7eb;}
+          .diff-table td.pfx{width:16px;text-align:center;font-weight:700;}
+          .diff-table td.code{width:47%;}
+          .diff-table td.sep{width:4px;background:#e5e7eb;}
+          .diff-table th{color:#fff;padding:8px 12px;}
+          .diff-table code{font-family:inherit;font-size:inherit;background:none;}
+        </style>
+        $(cat ${PREVIEW_DIR}/configmap-diff.html 2>/dev/null || echo '<pre>No changes or diff not available</pre>')
       </div>
     </details>
 
     <!-- Secret Diff — collapsed -->
     <details>
-      <summary>&#128273; Secret Diff</summary>
+      <summary>&#128273; Secret Diff <span style="font-size:11px;color:#6b7280;font-weight:400;">(key names only — values never shown)</span></summary>
       <div class="section-body">
         <pre>$(cat ${PREVIEW_DIR}/secret-diff.txt 2>/dev/null || echo 'No changes')</pre>
-        <p style="margin-top:10px;font-size:12px;color:#4B5563;">&#128274; Secret values are redacted in this output.</p>
+        <p style="margin-top:10px;font-size:12px;color:#4B5563;">&#128274; Secret values are never written to any file — only key names are compared.</p>
       </div>
     </details>
 

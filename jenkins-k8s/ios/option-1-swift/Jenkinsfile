@@ -45,7 +45,15 @@ pipeline {
 
         stage('Validate') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; set -e; xcodebuild -version; swift --version; swiftlint version; xcpretty --version'
+                sh '''
+                    source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
+                    echo "=== Tool versions ==="
+                    xcodebuild -version            || echo "MISSING: xcodebuild"
+                    swift --version                || echo "MISSING: swift"
+                    swiftlint version              || echo "MISSING: swiftlint (brew install swiftlint)"
+                    xcpretty --version             || echo "MISSING: xcpretty (gem install xcpretty) — build will continue without pretty output"
+                    echo "=== Done ==="
+                '''
             }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }

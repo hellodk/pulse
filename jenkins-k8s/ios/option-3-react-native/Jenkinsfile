@@ -29,7 +29,10 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'file:///Users/dk/jenkins-agent/git/mattermost-mobile', branch: 'main'
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [[$class: 'CloneOption', depth: 1, shallow: true, noTags: true, timeout: 30]],
+                    userRemoteConfigs: [[url: 'https://github.com/mattermost/mattermost-mobile.git']]])
                 script {
                     env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()

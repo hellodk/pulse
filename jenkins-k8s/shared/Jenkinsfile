@@ -29,14 +29,18 @@ pipeline {
         stage('Agent Health Check') {
             steps {
                 script {
-                    def offlineAgents = Jenkins.instance.computers
-                        .findAll { it.offline && it.displayName != 'Built-In Node' }
-                        .collect { it.displayName }
-                    if (offlineAgents) {
-                        echo "⚠ WARNING: Offline agents detected: ${offlineAgents.join(', ')}"
-                        currentBuild.description = "⚠ Offline agents: ${offlineAgents.join(', ')}"
-                    } else {
-                        echo "✓ All registered agents online"
+                    try {
+                        def offlineAgents = Jenkins.instance.computers
+                            .findAll { it.offline && it.displayName != 'Built-In Node' }
+                            .collect { it.displayName }
+                        if (offlineAgents) {
+                            echo "⚠ WARNING: Offline agents detected: ${offlineAgents.join(', ')}"
+                            currentBuild.description = "⚠ Offline agents: ${offlineAgents.join(', ')}"
+                        } else {
+                            echo "✓ All registered agents online"
+                        }
+                    } catch (ignored) {
+                        echo "Agent health check skipped (script sandbox restriction)"
                     }
                 }
             }
@@ -331,7 +335,16 @@ rm -rf "\$PULSE_DIR"
 
                 if (params.NOTIFY_EMAIL?.trim()) {
                     def duration  = currentBuild.durationString ?: 'N/A'
-                    def llmTrunc  = llmReport.size() > 8000 ? llmReport.take(8000) + '\n\n...(truncated — see llm-analysis.md artifact)' : llmReport
+                    def errorSnippet = fileExists('build-error-report.txt') ? readFile('build-error-report.txt').take(2000) : 'Not captured — LLM analysis may have failed to run.'
+                    def llmBodyTrunc = llmReport
+                    def llmSuggTrunc = ''
+                    if (llmReport.contains('## Improvement Suggestions')) {
+                        def idx = llmReport.indexOf('## Improvement Suggestions')
+                        llmBodyTrunc = llmReport.take(idx).trim()
+                        llmSuggTrunc = llmReport.substring(idx).trim()
+                    }
+                    llmBodyTrunc = llmBodyTrunc.size() > 5000 ? llmBodyTrunc.take(5000) + '\n\n...(truncated)' : llmBodyTrunc
+                    llmSuggTrunc = llmSuggTrunc.size() > 2000 ? llmSuggTrunc.take(2000) + '\n\n...(truncated)' : llmSuggTrunc
                     def testSummary = 'No test data'
                     try {
                         def tr = currentBuild.testResultAction
