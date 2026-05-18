@@ -1,0 +1,430 @@
+/* ============================================================
+   iOS Provisioning Profile Installer
+   Repo   : pulse / jenkins-k8s/ios/provisioning/
+   Agent  : ios-agent  (Mac Mini M3)
+   Plugins: File Parameters, Email Extension
+   ============================================================ */
+
+// ── Groovy helpers (defined before the pipeline block) ────────
+
+def expiryBadge(daysLeft) {
+    if (daysLeft == null) return '<span style="color:#888">Unknown</span>'
+    if (daysLeft < 0)  return "<span style='background:#dc2626;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>EXPIRED ${Math.abs(daysLeft)}d ago</span>"
+    if (daysLeft < 7)  return "<span style='background:#dc2626;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>⚠ ${daysLeft}d</span>"
+    if (daysLeft < 30) return "<span style='background:#f59e0b;color:#000;padding:2px 6px;border-radius:3px;font-size:11px;'>⚠ ${daysLeft}d</span>"
+    return "<span style='background:#16a34a;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>${daysLeft}d</span>"
+}
+
+def typeBadge(type) {
+    def colors = [
+        'AppStore':    '#0078d4:#fff',
+        'Enterprise':  '#7c3aed:#fff',
+        'AdHoc':       '#d97706:#000',
+        'Development': '#374151:#fff',
+    ]
+    def pair = colors.get(type, '#374151:#fff').split(':')
+    return "<span style='background:${pair[0]};color:${pair[1]};padding:2px 6px;border-radius:3px;font-size:11px;'>${type}</span>"
+}
+
+def installBadge(alreadyInstalled, replaceExisting) {
+    if (!alreadyInstalled) return "<span style='background:#16a34a;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>New</span>"
+    if (replaceExisting)   return "<span style='background:#f59e0b;color:#000;padding:2px 6px;border-radius:3px;font-size:11px;'>Replace</span>"
+    return                        "<span style='background:#6b7280;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>Skip</span>"
+}
+
+def buildApprovalHTML(profiles, dryRun, replaceExisting, agentName, buildUrl) {
+    def replaceCount  = profiles.count { it.already_installed && replaceExisting }
+    def skipCount     = profiles.count { it.already_installed && !replaceExisting }
+    def newCount      = profiles.count { !it.already_installed }
+    def errorCount    = profiles.count { it.error }
+    def warnExpiry    = profiles.count { it.days_left != null && it.days_left < 30 && it.days_left >= 0 }
+    def expiredCount  = profiles.count { it.days_left != null && it.days_left < 0 }
+
+    def modeLabel = dryRun ? '🔍 DRY RUN — no files will be written' : '🚀 INSTALL — profiles will be copied to the keychain'
+
+    def rows = profiles.collect { p ->
+        if (p.error) {
+            return """<tr style='background:#fff5f5'>
+              <td colspan='8' style='color:#dc2626;padding:8px 12px;'>
+                ❌ <b>${p.file}</b> — parse error: ${p.error}
+              </td>
+            </tr>"""
+        }
+        def rowBg = p.already_installed ? '#fffbeb' : '#fff'
+        """<tr style='background:${rowBg}'>
+          <td style='padding:8px 12px;font-family:monospace;font-size:11px;max-width:120px;word-break:break-all;'>${p.name}</td>
+          <td style='padding:8px 12px;font-family:monospace;font-size:10px;color:#555;'>${p.uuid}</td>
+          <td style='padding:8px 12px;font-family:monospace;font-size:11px;'>${p.bundle_id}</td>
+          <td style='padding:8px 12px;font-size:11px;'>${p.team_id}<br><span style='color:#888;font-size:10px;'>${p.team_name}</span></td>
+          <td style='padding:8px 12px;'>${typeBadge(p.distribution_type)}</td>
+          <td style='padding:8px 12px;font-size:11px;'>${p.expiry?.take(10) ?: 'Unknown'}<br>${expiryBadge(p.days_left)}</td>
+          <td style='padding:8px 12px;'>${installBadge(p.already_installed, replaceExisting)}</td>
+          <td style='padding:8px 12px;font-size:11px;color:#555;'>${p.push_enabled ? "🔔 ${p.push_env}" : '—'}</td>
+        </tr>"""
+    }.join('\n')
+
+    def warnings = []
+    if (errorCount > 0)   warnings << "<li style='color:#dc2626'>❌ ${errorCount} profile(s) failed to parse and will be skipped.</li>"
+    if (expiredCount > 0) warnings << "<li style='color:#dc2626'>❌ ${expiredCount} profile(s) are already <b>expired</b> — installation will be blocked.</li>"
+    if (warnExpiry > 0)   warnings << "<li style='color:#d97706'>⚠ ${warnExpiry} profile(s) expire within 30 days.</li>"
+    if (replaceCount > 0) warnings << "<li style='color:#d97706'>⚠ ${replaceCount} profile(s) will <b>replace</b> an existing installation. Backups are created automatically.</li>"
+    if (skipCount > 0)    warnings << "<li style='color:#6b7280'>ℹ ${skipCount} profile(s) already exist and will be <b>skipped</b> (REPLACE_EXISTING is false).</li>"
+    def warningBlock = warnings ? "<ul style='margin:8px 0;padding-left:20px;'>${warnings.join('')}</ul>" : '<p style="color:#16a34a">✅ No warnings.</p>'
+
+    return """<div style='font-family:-apple-system,Arial,sans-serif;max-width:900px;'>
+<div style='background:linear-gradient(135deg,#1d4ed8,#1e40af);color:#fff;padding:18px 24px;border-radius:8px 8px 0 0;'>
+  <h2 style='margin:0;font-size:18px;'>📱 iOS Provisioning Profile Installation</h2>
+  <p style='margin:4px 0 0;font-size:12px;opacity:.85;'>${env.JOB_NAME} · Build #${env.BUILD_NUMBER} · Agent: ${agentName}</p>
+</div>
+<div style='background:#fff;border:1px solid #e5e7eb;padding:16px 24px;'>
+  <table style='width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px;'>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;width:130px;'>Mode</td><td>${modeLabel}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;'>Total profiles</td><td>${profiles.size()}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;'>New installs</td><td>${newCount}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;'>Replacements</td><td>${replaceCount}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;'>Skipped</td><td>${skipCount}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;color:#555;font-weight:600;'>Errors</td><td style='color:${errorCount > 0 ? "#dc2626" : "#16a34a"}'>${errorCount}</td></tr>
+  </table>
+
+  <div style='font-size:13px;font-weight:700;color:#333;border-bottom:2px solid #e5e7eb;padding-bottom:5px;margin:12px 0 8px;'>Warnings &amp; Notes</div>
+  ${warningBlock}
+
+  <div style='font-size:13px;font-weight:700;color:#333;border-bottom:2px solid #e5e7eb;padding-bottom:5px;margin:16px 0 8px;'>Profile Details</div>
+  <div style='overflow-x:auto;'>
+  <table style='width:100%;border-collapse:collapse;font-size:12px;'>
+    <tr style='background:#f8f9fa;'>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Name</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>UUID</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Bundle ID</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Team</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Type</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Expiry</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Action</th>
+      <th style='padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;'>Push</th>
+    </tr>
+    ${rows}
+  </table>
+  </div>
+  <p style='font-size:11px;color:#888;margin-top:12px;'>
+    Full artifact: <a href='${buildUrl}artifact/reports/profiles_summary.html'>profiles_summary.html</a>
+  </p>
+</div>
+</div>"""
+}
+
+def buildEmailBody(status, profiles, validationResults, dryRun, replaceExisting, duration) {
+    def isSuccess = status == 'SUCCESS'
+    def hdrGrad   = isSuccess ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#c0392b,#96281b)'
+    def hdrTitle  = isSuccess ? '✅ iOS Provisioning — Profiles Installed' : '❌ iOS Provisioning — Installation Failed'
+    def modeLabel = dryRun ? 'Dry Run (no files written)' : 'Install'
+
+    def profileRows = profiles.collect { p ->
+        if (p.error) {
+            return "<tr><td colspan='6' style='color:#dc2626;padding:8px 14px;'>❌ ${p.file} — ${p.error}</td></tr>"
+        }
+        def valResult = validationResults?.find { it.uuid == p.uuid }
+        def valStatus = valResult?.status ?: (dryRun ? 'N/A' : 'Not checked')
+        def valColor  = valStatus == 'PASS' ? '#16a34a' : (valStatus == 'N/A' ? '#888' : '#dc2626')
+        def daysCell  = p.days_left == null ? 'Unknown' : (p.days_left < 0 ? "<b style='color:#dc2626'>EXPIRED</b>" : "${p.days_left}d")
+        """<tr>
+          <td style='padding:8px 14px;border-bottom:1px solid #f0f0f0;'>${p.name}</td>
+          <td style='padding:8px 14px;border-bottom:1px solid #f0f0f0;font-family:monospace;font-size:10px;'>${p.uuid}</td>
+          <td style='padding:8px 14px;border-bottom:1px solid #f0f0f0;font-size:11px;'>${p.distribution_type}</td>
+          <td style='padding:8px 14px;border-bottom:1px solid #f0f0f0;'>${p.expiry?.take(10) ?: 'Unknown'}<br><span style='font-size:10px;'>${daysCell}</span></td>
+          <td style='padding:8px 14px;border-bottom:1px solid #f0f0f0;font-weight:600;color:${valColor};'>${valStatus}</td>
+        </tr>"""
+    }.join('\n')
+
+    return """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:${hdrGrad};color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td,th{padding:9px 14px;border-bottom:1px solid #f0f0f0;text-align:left;}
+th{background:#f8f9fa;font-weight:600;color:#555;font-size:12px;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#0078d4;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr">
+  <h1>${hdrTitle}</h1>
+  <p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+</div>
+<div class="body">
+  <table style="margin-bottom:16px;">
+    <tr><td style="font-weight:600;color:#555;width:150px;">Job</td><td>${env.JOB_NAME}</td></tr>
+    <tr><td style="font-weight:600;color:#555;">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+    <tr><td style="font-weight:600;color:#555;">Agent</td><td>${env.NODE_NAME}</td></tr>
+    <tr><td style="font-weight:600;color:#555;">Mode</td><td>${modeLabel}</td></tr>
+    <tr><td style="font-weight:600;color:#555;">Duration</td><td>${duration}</td></tr>
+    <tr><td style="font-weight:600;color:#555;">Status</td><td style="font-weight:700;color:${isSuccess ? '#16a34a' : '#dc2626'}">${status}</td></tr>
+  </table>
+  <div class="btn-row">
+    <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+    <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+    <a href="${env.BUILD_URL}artifact/reports/" class="btn b2">Reports</a>
+  </div>
+  <div class="sec">📋 Profiles (${profiles.size()})</div>
+  <table>
+    <tr><th>Name</th><th>UUID</th><th>Type</th><th>Expires</th><th>Validation</th></tr>
+    ${profileRows}
+  </table>
+</div>
+<div class="ftr">Jenkins CI &middot; iOS Provisioning &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+}
+
+// ── Pipeline ───────────────────────────────────────────────────
+
+pipeline {
+    agent { label 'ios-agent' }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+    }
+
+    parameters {
+        base64File(
+            name: 'PROFILES_ZIP',
+            description: 'ZIP file containing one or more .mobileprovision files'
+        )
+        string(
+            name: 'NOTIFY_EMAIL',
+            defaultValue: 'reject@hellodk.io',
+            description: 'Comma-separated email recipients'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Parse and validate only — do not write any files'
+        )
+        booleanParam(
+            name: 'REPLACE_EXISTING',
+            defaultValue: false,
+            description: 'Overwrite profiles that are already installed (by UUID). A backup is always created.'
+        )
+        string(
+            name: 'APPROVERS',
+            defaultValue: '',
+            description: 'Jenkins usernames who may approve (comma-separated). Leave blank to allow any authenticated user.'
+        )
+    }
+
+    environment {
+        PROFILE_DIR  = "${WORKSPACE}/profiles"
+        EXTRACT_DIR  = "${WORKSPACE}/extracted"
+        REPORT_DIR   = "${WORKSPACE}/reports"
+        BACKUP_DIR   = "${WORKSPACE}/backups"
+        INSTALL_DIR  = "${HOME}/Library/MobileDevice/Provisioning Profiles"
+        SCRIPTS_DIR  = "${WORKSPACE}/jenkins-k8s/ios/provisioning/scripts"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git url: 'http://100.89.50.27:30300/dk/pulse', branch: 'master'
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Prepare') {
+            steps {
+                sh '''
+                    rm -rf "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
+                    mkdir -p "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
+                    chmod +x "$SCRIPTS_DIR/"*.sh "$SCRIPTS_DIR/"*.py 2>/dev/null || true
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Extract ZIP') {
+            steps {
+                withFileParameter('PROFILES_ZIP') {
+                    sh '''
+                        cp "$PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
+                        unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
+                        find "$EXTRACT_DIR" -name "*.mobileprovision" -exec cp {} "$PROFILE_DIR/" \;
+                        COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
+                        echo "Extracted $COUNT provisioning profile(s) from ZIP"
+                        if [ "$COUNT" -eq 0 ]; then
+                            echo "ERROR: No .mobileprovision files found in the uploaded ZIP."
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Parse Profiles') {
+            steps {
+                sh '''
+                    python3 "$SCRIPTS_DIR/parse_profiles.py" \
+                        --profile-dir "$PROFILE_DIR" \
+                        --install-dir "$INSTALL_DIR" \
+                        --output     "$REPORT_DIR/profiles.json"
+                    echo "--- profiles.json ---"
+                    cat "$REPORT_DIR/profiles.json"
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Confirm Installation') {
+            steps {
+                script {
+                    def raw      = readFile("${REPORT_DIR}/profiles.json")
+                    def profiles = new groovy.json.JsonSlurperClassic().parseText(raw)
+
+                    // Guard: block if any profile is expired
+                    def expired = profiles.findAll { it.days_left != null && it.days_left < 0 }
+                    if (expired) {
+                        error("${expired.size()} profile(s) are expired. Remove them from the ZIP and re-trigger:\n" +
+                              expired.collect { "  • ${it.name} (expired ${Math.abs(it.days_left as int)}d ago)" }.join('\n'))
+                    }
+
+                    // Guard: block if parse errors exist
+                    def errored = profiles.findAll { it.error }
+                    if (errored) {
+                        error("${errored.size()} profile(s) failed to parse. Fix the ZIP:\n" +
+                              errored.collect { "  • ${it.file}: ${it.error}" }.join('\n'))
+                    }
+
+                    // Build the HTML approval table
+                    def approvalHtml = buildApprovalHTML(
+                        profiles,
+                        params.DRY_RUN,
+                        params.REPLACE_EXISTING,
+                        env.NODE_NAME ?: 'ios-agent',
+                        env.BUILD_URL
+                    )
+
+                    // Archive it so approvers can also open it as a full HTML artifact
+                    writeFile file: "${REPORT_DIR}/profiles_summary.html", text: approvalHtml
+                    archiveArtifacts artifacts: 'reports/profiles_summary.html', allowEmptyArchive: false
+
+                    // Show the approval dialog with the HTML table inline
+                    def inputArgs = [
+                        message:  approvalHtml,
+                        ok:       params.DRY_RUN ? '▶ Run Dry-Run Validation' : '✅ Confirm — Install Profiles'
+                    ]
+                    if (params.APPROVERS?.trim()) {
+                        inputArgs.submitter = params.APPROVERS
+                    }
+                    input(inputArgs)
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Install Profiles') {
+            when { expression { !params.DRY_RUN } }
+            steps {
+                sh '''
+                    "$SCRIPTS_DIR/install_profiles.sh" \
+                        "$PROFILE_DIR" \
+                        "$INSTALL_DIR" \
+                        "$BACKUP_DIR" \
+                        "${REPLACE_EXISTING}"
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Validate Installation') {
+            steps {
+                script {
+                    def dryFlag = params.DRY_RUN ? 'DRY_RUN=true' : ''
+                    sh """
+                        ${dryFlag}
+                        "$SCRIPTS_DIR/validate_profiles.sh" \
+                            "$PROFILE_DIR" \
+                            "$INSTALL_DIR" \
+                            "$REPORT_DIR/validation.json"
+                    """
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Archive Reports') {
+            steps {
+                archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def profiles   = new groovy.json.JsonSlurperClassic()
+                    .parseText(readFile("${REPORT_DIR}/profiles.json"))
+                def validation = fileExists("${REPORT_DIR}/validation.json")
+                    ? new groovy.json.JsonSlurperClassic().parseText(readFile("${REPORT_DIR}/validation.json"))
+                    : []
+                def body = buildEmailBody(
+                    'SUCCESS', profiles, validation,
+                    params.DRY_RUN, params.REPLACE_EXISTING,
+                    currentBuild.durationString ?: 'N/A'
+                )
+                emailext(
+                    subject: "${params.DRY_RUN ? '[DRY RUN] ' : ''}✅ iOS Provisioning Profiles Installed — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    to: params.NOTIFY_EMAIL,
+                    mimeType: 'text/html',
+                    attachmentsPattern: 'reports/**',
+                    body: body
+                )
+            }
+        }
+
+        failure {
+            script {
+                // Auto-rollback: restore any backups that were made before the failure
+                sh '''
+                    BACKUPS=$(find "$BACKUP_DIR" -name "*.mobileprovision.bak" 2>/dev/null | wc -l | tr -d ' ')
+                    if [ "$BACKUPS" -gt 0 ]; then
+                        echo "⏪ Rolling back $BACKUPS profile(s) from backup..."
+                        for bak in "$BACKUP_DIR"/*.mobileprovision.bak; do
+                            UUID=$(basename "$bak" .mobileprovision.bak)
+                            cp "$bak" "$INSTALL_DIR/$UUID.mobileprovision"
+                            echo "  Restored: $UUID"
+                        done
+                        echo "Rollback complete."
+                    else
+                        echo "No backups found — nothing to roll back."
+                    fi
+                '''
+
+                def profiles = []
+                try {
+                    profiles = new groovy.json.JsonSlurperClassic()
+                        .parseText(readFile("${REPORT_DIR}/profiles.json"))
+                } catch (ignored) {}
+
+                def body = buildEmailBody(
+                    'FAILURE', profiles, [],
+                    params.DRY_RUN, params.REPLACE_EXISTING,
+                    currentBuild.durationString ?: 'N/A'
+                )
+                emailext(
+                    subject: "❌ iOS Provisioning FAILED — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    to: params.NOTIFY_EMAIL,
+                    mimeType: 'text/html',
+                    body: body
+                )
+            }
+        }
+
+        cleanup {
+            sh 'rm -rf "$EXTRACT_DIR" || true'
+        }
+    }
+}

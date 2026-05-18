@@ -1,0 +1,34 @@
+## iOS Provisioning Profile Pipeline — Global Configuration
+## All parameters here can be overridden at build time via Jenkins parameters.
+
+install:
+  # macOS path where Xcode reads provisioning profiles
+  path: ~/Library/MobileDevice/Provisioning Profiles
+  # Copy existing profile to backup_dir before replacing
+  backup_existing: true
+
+validation:
+  # Fail the pipeline if any profile expires within this many days
+  min_days_remaining: 7
+  # Warn (but not fail) if any profile expires within this many days
+  warn_days_remaining: 30
+
+security:
+  # If non-empty, only profiles signed by these Apple Team IDs are accepted.
+  # Leave empty to allow any team.
+  allowed_team_ids: []
+  # Jenkins usernames (comma-separated) who may approve the install.
+  # Leave empty to allow any authenticated Jenkins user.
+  approvers: ""
+
+notifications:
+  default_recipients: reject@hellodk.io
+  # Include the full HTML validation report as an email attachment
+  attach_report: true
+
+## Distribution type labels (cosmetic only — do not change keys)
+labels:
+  AppStore:    "App Store"
+  Enterprise:  "Enterprise (In-House)"
+  AdHoc:       "Ad Hoc"
+  Development: "Development"
