@@ -13,20 +13,33 @@
    ============================================================ */
 
 def readConfig(cfgPath) {
-    // Try absolute path in the pulse repo clone on the host (works on cylon + k8s pods via hostPath).
-    // Fall back to Jenkins userContent URL (works from Mac Mini and any agent that can reach port 30881).
+    // Resolution order:
+    // 1. Absolute path in local pulse clone — works on cylon-agent + k8s pods (hostPath mount).
+    // 2. Jenkins userContent URL — works from Mac Mini (port 30881 accessible over Tailscale).
+    // Uses a temp file to avoid yq stdin pipe issues across different yq versions/distros.
     def json = sh(script: """#!/bin/bash
 set +e
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 ABS="/home/dk/Documents/git/pulse/${cfgPath}"
 UC="http://100.89.50.27:30881/userContent/shared/${cfgPath}"
+TMP=\$(mktemp /tmp/cfg.XXXXXX.yaml)
+# Try absolute path first
 if [ -f "\$ABS" ]; then
-    yq -o=json '.' "\$ABS" 2>/dev/null && exit 0
+    cp "\$ABS" "\$TMP"
+else
+    curl -sf --max-time 15 "\$UC" -o "\$TMP" 2>/dev/null
 fi
-curl -sf --max-time 15 "\$UC" 2>/dev/null | yq -o=json '.' - 2>/dev/null && exit 0
+if [ -s "\$TMP" ]; then
+    yq -o=json '.' "\$TMP" 2>/dev/null || python3 -c "
+import yaml, json, sys
+with open('\$TMP') as f:
+    print(json.dumps(yaml.safe_load(f) or {}))
+" 2>/dev/null
+fi
+rm -f "\$TMP"
 echo '{}'
 """, returnStdout: true).trim()
-    // yq can emit multiple lines; take the first non-empty JSON object
-    def jsonLine = json.split('\n').find { it.trim().startsWith('{') } ?: '{}'
+    def jsonLine = json.split('\n').find { it?.trim()?.startsWith('{') } ?: '{}'
     return new groovy.json.JsonSlurperClassic().parseText(jsonLine)
 }
 
