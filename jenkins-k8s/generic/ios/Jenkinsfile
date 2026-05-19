@@ -111,7 +111,7 @@ pipeline {
     agent { label params.AGENT_LABEL ?: 'ios-agent' }
 
     options {
-        skipDefaultCheckout(false)   // pulse repo checked out → scripts available
+        skipDefaultCheckout(true)   // pulse repo checked out → scripts available
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
@@ -135,7 +135,7 @@ pipeline {
     }
 
     environment {
-        SHARED_DIR  = "${WORKSPACE}/jenkins-k8s/shared"
+        SHARED_DIR  = "http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared"
         APP_SRC_DIR = "${WORKSPACE}/app-src"
         REPORTS_DIR = "${WORKSPACE}/app-src/reports"
         BUILD_DIR   = "${WORKSPACE}/app-src/build"
@@ -848,8 +848,8 @@ td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{backgr
                         sh """#!/bin/bash
 set +e
 cd "\${APP_SRC_DIR}"
-bash "\${SHARED_DIR}/zip-logs.sh" || true
-bash "\${SHARED_DIR}/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+curl -sf --max-time 20 "${SHARED_DIR}/zip-logs.sh" 2>/dev/null | bash || true
+curl -sf --max-time 20 "${SHARED_DIR}/extract-build-errors.sh" 2>/dev/null | bash > build-error-report.txt 2>/dev/null || true
 export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
 export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
 export LOG_TAIL="\${ERROR_SNIPPET}"
@@ -859,7 +859,7 @@ export BUILD_TYPE="${env.BUILD_TYPE ?: 'iOS'}"
 export APP_NAME="${env.APP_NAME ?: 'Unknown'}"
 export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
 export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-bash "\${SHARED_DIR}/llm-analysis.sh" || true
+curl -sf --max-time 20 "${SHARED_DIR}/llm-analysis.sh" 2>/dev/null | bash || true
 """
                         if (fileExists("${env.APP_SRC_DIR}/llm-analysis.md")) {
                             llmReport = readFile("${env.APP_SRC_DIR}/llm-analysis.md")
