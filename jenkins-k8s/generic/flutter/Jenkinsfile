@@ -24,20 +24,21 @@ UC="http://100.89.50.27:30881/userContent/shared/${cfgPath}"
 PARSER="http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/parse-config.py"
 DEST="${cfgJson}"
 
-if [ -f "\\$ABS" ]; then
-    echo "[readConfig] absolute path: \\$ABS"
-    CFG_PATH="\\$ABS"
+if [ -f "\$ABS" ]; then
+    echo "[readConfig] absolute path: \$ABS"
+    CFG_PATH="\$ABS"
 else
-    echo "[readConfig] curl: \\$UC"
-    CFG_PATH=\$(mktemp /tmp/cfg_XXXXXX.yaml)
-    curl -sf --max-time 15 "\\$UC" -o "\\$CFG_PATH" 2>/dev/null
-    TMPFILE="\\$CFG_PATH"
+    echo "[readConfig] curl: \$UC"
+    CFG_PATH=$(mktemp /tmp/cfg_XXXXXX.yaml)
+    curl -sf --max-time 15 "\$UC" -o "\$CFG_PATH" 2>/dev/null
+    TMPFILE="\$CFG_PATH"
 fi
 
-echo "[readConfig] size=\$(wc -c < \\$CFG_PATH 2>/dev/null || echo 0) bytes"
-curl -sf --max-time 15 "\\$PARSER" 2>/dev/null | python3 - "\\$CFG_PATH" > "\\$DEST" 2>/dev/null   || { echo "[readConfig] parse failed"; echo '{}' > "\\$DEST"; }
+echo "[readConfig] size=$(wc -c < "\$CFG_PATH" 2>/dev/null || echo 0) bytes"
+curl -sf --max-time 15 "\$PARSER" 2>/dev/null | python3 - "\$CFG_PATH" > "\$DEST" 2>/dev/null \
+  || { echo "[readConfig] parse failed"; echo '{}' > "\$DEST"; }
 
-[ -n "\${TMPFILE:-}" ] && rm -f "\\$TMPFILE"
+[ -n "\${TMPFILE:-}" ] && rm -f "\$TMPFILE"
 echo "[readConfig] result: \$(cat \\$DEST | head -c 120)"
 """
     def json = fileExists(cfgJson) ? readFile(cfgJson).trim() : '{}'
