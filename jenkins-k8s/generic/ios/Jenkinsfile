@@ -18,11 +18,22 @@
 
 // ── Groovy helpers ────────────────────────────────────────────
 
-def readConfig(path) {
-    // yq converts YAML → JSON; JsonSlurperClassic parses in Groovy sandbox
-    def json = sh(script: "yq -o=json '.' '${path}' 2>/dev/null || echo '{}'",
-                  returnStdout: true).trim()
-    return new groovy.json.JsonSlurperClassic().parseText(json)
+def readConfig(cfgPath) {
+    // Try absolute path in the pulse repo clone on the host (works on cylon + k8s pods via hostPath).
+    // Fall back to Jenkins userContent URL (works from Mac Mini and any agent that can reach port 30881).
+    def json = sh(script: """#!/bin/bash
+set +e
+ABS="/home/dk/Documents/git/pulse/${cfgPath}"
+UC="http://100.89.50.27:30881/userContent/shared/${cfgPath}"
+if [ -f "\$ABS" ]; then
+    yq -o=json '.' "\$ABS" 2>/dev/null && exit 0
+fi
+curl -sf --max-time 15 "\$UC" 2>/dev/null | yq -o=json '.' - 2>/dev/null && exit 0
+echo '{}'
+""", returnStdout: true).trim()
+    // yq can emit multiple lines; take the first non-empty JSON object
+    def jsonLine = json.split('\n').find { it.trim().startsWith('{') } ?: '{}'
+    return new groovy.json.JsonSlurperClassic().parseText(jsonLine)
 }
 
 def cfgStr(cfg, String... keys) {
