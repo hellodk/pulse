@@ -13,34 +13,42 @@
    ============================================================ */
 
 def readConfig(cfgPath) {
-    // Resolution order:
-    // 1. Absolute path in local pulse clone — works on cylon-agent + k8s pods (hostPath mount).
-    // 2. Jenkins userContent URL — works from Mac Mini (port 30881 accessible over Tailscale).
-    // Uses a temp file to avoid yq stdin pipe issues across different yq versions/distros.
-    def json = sh(script: """#!/bin/bash
+    // Resolves config via absolute host path (k8s/cylon) or Jenkins userContent (Mac Mini).
+    // parse-config.py (zero-dependency Python YAML→JSON) is fetched from userContent.
+    def cfgJson = "${WORKSPACE}/.cfg_${BUILD_NUMBER}.json"
+    sh label: 'Read build config', script: """#!/bin/bash
 set +e
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\\${PATH:-}"
 ABS="/home/dk/Documents/git/pulse/${cfgPath}"
 UC="http://100.89.50.27:30881/userContent/shared/${cfgPath}"
-TMP=\$(mktemp /tmp/cfg.XXXXXX.yaml)
-# Try absolute path first
-if [ -f "\$ABS" ]; then
-    cp "\$ABS" "\$TMP"
+PARSER="http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/parse-config.py"
+DEST="${cfgJson}"
+
+if [ -f "\\$ABS" ]; then
+    echo "[readConfig] absolute path: \\$ABS"
+    CFG_PATH="\\$ABS"
 else
-    curl -sf --max-time 15 "\$UC" -o "\$TMP" 2>/dev/null
+    echo "[readConfig] curl: \\$UC"
+    CFG_PATH=\$(mktemp /tmp/cfg_XXXXXX.yaml)
+    curl -sf --max-time 15 "\\$UC" -o "\\$CFG_PATH" 2>/dev/null
+    TMPFILE="\\$CFG_PATH"
 fi
-if [ -s "\$TMP" ]; then
-    yq -o=json '.' "\$TMP" 2>/dev/null || python3 -c "
-import yaml, json, sys
-with open('\$TMP') as f:
-    print(json.dumps(yaml.safe_load(f) or {}))
-" 2>/dev/null
-fi
-rm -f "\$TMP"
-echo '{}'
-""", returnStdout: true).trim()
+
+echo "[readConfig] size=\$(wc -c < \\$CFG_PATH 2>/dev/null || echo 0) bytes"
+curl -sf --max-time 15 "\\$PARSER" 2>/dev/null | python3 - "\\$CFG_PATH" > "\\$DEST" 2>/dev/null   || { echo "[readConfig] parse failed"; echo '{}' > "\\$DEST"; }
+
+[ -n "\\${TMPFILE:-}" ] && rm -f "\\$TMPFILE"
+echo "[readConfig] result: \$(cat \\$DEST | head -c 120)"
+"""
+    def json = fileExists(cfgJson) ? readFile(cfgJson).trim() : '{}'
+    sh "rm -f '${cfgJson}' 2>/dev/null || true"
     def jsonLine = json.split('\n').find { it?.trim()?.startsWith('{') } ?: '{}'
-    return new groovy.json.JsonSlurperClassic().parseText(jsonLine)
+    try {
+        return new groovy.json.JsonSlurperClassic().parseText(jsonLine)
+    } catch(e) {
+        echo "[readConfig] JSON error: \${e.message?.take(100)}"
+        return [:]
+    }
 }
 
 def cfgStr(cfg, String... keys) {
