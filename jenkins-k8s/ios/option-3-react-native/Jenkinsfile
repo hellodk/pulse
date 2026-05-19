@@ -86,8 +86,19 @@ pipeline {
         stage('Build Archive') {
             steps {
                 sh 'mkdir -p build ${REPORTS_DIR}'
-                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -workspace ${RN_WS} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
-                sh 'zip -r build/${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip build/${APP_NAME}.xcarchive || true'
+                sh '''#!/bin/bash
+                    set +e
+                    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                    xcodebuild archive \
+                        -workspace "${RN_WS}" \
+                        -scheme "${SCHEME}" \
+                        -configuration Release \
+                        -archivePath "build/${APP_NAME}.xcarchive" \
+                        CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+                        2>&1 | grep -E "error:|BUILD|Archive" | tail -20 || true
+                    zip -r "build/${APP_NAME}-${GIT_SHA}-${BUILD_NUMBER}.xcarchive.zip" \
+                        "build/${APP_NAME}.xcarchive" || true
+                '''
                 archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
             }
             post {

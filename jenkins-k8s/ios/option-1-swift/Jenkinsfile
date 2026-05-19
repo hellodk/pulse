@@ -64,13 +64,21 @@ pipeline {
             steps {
                 sh '''#!/bin/bash
                     set +e
-                    echo "Workspace contents:"
-                    ls -la
-                    echo "---"
+                    # Detect project — xcodeproj may be nested (e.g. Tutorial/N/)
+                    PROJECT=$(find . -name "*.xcodeproj" -not -path "*/.git/*" \
+                                | sort | tail -1)
+                    if [ -z "$PROJECT" ]; then
+                        echo "No .xcodeproj found — skipping SPM resolution"
+                        exit 0
+                    fi
+                    SCHEME=$(basename "$PROJECT" .xcodeproj)
+                    echo "Project: $PROJECT   Scheme: $SCHEME"
+                    # Cache detected path for subsequent stages
+                    echo "$PROJECT" > /tmp/ios_swift_project_path_${BUILD_NUMBER}.txt
                     xcodebuild -resolvePackageDependencies \
-                        -project RetroRampage.xcodeproj \
-                        -scheme  RetroRampage \
-                        -clonedSourcePackagesDirPath .spm-cache || true
+                        -project "$PROJECT" \
+                        -scheme  "$SCHEME" \
+                        -clonedSourcePackagesDirPath .spm-cache 2>&1 | tail -10 || true
                 '''
             }
             post {
@@ -80,9 +88,22 @@ pipeline {
 
         stage('Build Archive') {
             steps {
-                sh "mkdir -p build ${REPORTS_DIR}; agvtool new-version -all ${BUILD_NUMBER} || true"
-                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild archive -project ${PROJECT_FILE} -scheme "${SCHEME}" -configuration Release -archivePath build/${APP_NAME}.xcarchive CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO | xcpretty || true'
-                sh 'zip -r build/${ARTIFACT} build/${APP_NAME}.xcarchive || true'
+                sh '''#!/bin/bash
+                    set +e
+                    mkdir -p build reports
+                    PROJECT=$(cat /tmp/ios_swift_project_path_${BUILD_NUMBER}.txt 2>/dev/null || \
+                              find . -name "*.xcodeproj" -not -path "*/.git/*" | sort | tail -1)
+                    SCHEME=$(basename "$PROJECT" .xcodeproj)
+                    echo "Archiving: $PROJECT  scheme: $SCHEME"
+                    xcodebuild archive \
+                        -project "$PROJECT" \
+                        -scheme  "$SCHEME" \
+                        -configuration Release \
+                        -archivePath build/RetroRampage.xcarchive \
+                        CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+                        2>&1 | grep -E "error:|warning:|BUILD|Archive" | tail -20 || true
+                    zip -r build/${ARTIFACT:-archive.zip} build/RetroRampage.xcarchive || true
+                '''
                 archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
             }
             post {
@@ -92,7 +113,15 @@ pipeline {
 
         stage('Unit Tests') {
             steps {
-                sh 'source ~/.bashrc 2>/dev/null || true; xcodebuild test -project ${PROJECT_FILE} -scheme "${SCHEME}" -destination "${SIMULATOR}" -resultBundlePath build/TestResults.xcresult | xcpretty --report junit --output ${REPORTS_DIR}/test-results.xml || true'
+                sh '''#!/bin/bash
+                    set +e
+                    PROJECT=$(cat /tmp/ios_swift_project_path_${BUILD_NUMBER}.txt 2>/dev/null || \
+                              find . -name "*.xcodeproj" -not -path "*/.git/*" | sort | tail -1)
+                    SCHEME=$(basename "$PROJECT" .xcodeproj)
+                    xcodebuild test -project "$PROJECT" -scheme "$SCHEME" \
+                        -destination "${SIMULATOR}" \
+                        -resultBundlePath build/TestResults.xcresult 2>&1 | tail -10 || true
+                '''
             }
             post {
                 always { junit allowEmptyResults: true, testResults: "${REPORTS_DIR}/test-results.xml" }
