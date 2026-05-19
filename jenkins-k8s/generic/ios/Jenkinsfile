@@ -38,10 +38,16 @@ else
     if [ -s "${TMP}" ]; then SRC="${TMP}"; else echo '{}' > "${RC_DEST}"; exit 0; fi
 fi
 echo "[readConfig] size=$(wc -c < "${SRC}") bytes"
-curl -sf --max-time 15 "${RC_PARSER}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
-  || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
+PARSER_LOCAL="/var/jenkins_home/userContent/shared/jenkins-k8s/shared/parse-config.py"
+if [ -f "${PARSER_LOCAL}" ]; then
+    python3 "${PARSER_LOCAL}" "${SRC}" > "${RC_DEST}" 2>/dev/null \
+      || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
+else
+    curl -sf --max-time 15 "${RC_PARSER}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
+      || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
+fi
 echo "[readConfig] result: $(cat "${RC_DEST}" | head -c 120)"
-[ "${SRC}" != "${RC_ABS}" ] && rm -f "${SRC}"
+if [ "${SRC}" != "${RC_ABS}" ]; then rm -f "${SRC}"; fi
 '''
     }
     def json = fileExists(cfgJson) ? readFile(cfgJson).trim() : '{}'
