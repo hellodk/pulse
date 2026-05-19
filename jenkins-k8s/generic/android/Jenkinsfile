@@ -1,0 +1,422 @@
+/* ============================================================
+   Generic Android Build Pipeline
+   ─────────────────────────────────────────────────────────────
+   Config-driven: reads jenkins-k8s/apps/<app>/build-config.yaml
+   Features: LLM A→B failover, zip logs, styled HTML email,
+   SAST (lint + spotbugs + semgrep + dependency-check),
+   test results, Nexus/JFrog upload.
+
+   To onboard a new Android app:
+     1. Create jenkins-k8s/apps/<your-app>/build-config.yaml
+     2. Create a Jenkins Pipeline job in the "Android Builds" folder
+     3. Set APP_CONFIG = jenkins-k8s/apps/<your-app>/build-config.yaml
+   ============================================================ */
+
+def readConfig(path) {
+    def json = sh(script: "yq -o=json '.' '${path}' 2>/dev/null || echo '{}'",
+                  returnStdout: true).trim()
+    return new groovy.json.JsonSlurperClassic().parseText(json)
+}
+
+def cfgStr(cfg, String... keys) {
+    def v = cfg; for (k in keys) { v = v?.get(k) }; return v?.toString() ?: ''
+}
+
+def cfgBool(cfg, String... keys) {
+    def v = cfg; for (k in keys) { v = v?.get(k) }; return v == true || v?.toString() == 'true'
+}
+
+pipeline {
+
+    agent { label params.AGENT_LABEL ?: 'android-agent' }
+
+    options {
+        skipDefaultCheckout(false)
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'APP_CONFIG',
+            defaultValue: 'jenkins-k8s/apps/sunflower/build-config.yaml',
+            description: 'Path to build-config.yaml in the pulse repo'
+        )
+        string(name: 'AGENT_LABEL',    defaultValue: 'android-agent')
+        string(name: 'NOTIFY_EMAIL',   defaultValue: 'reject@hellodk.io')
+        string(name: 'LLM_ENDPOINT_A', defaultValue: 'http://100.89.50.27:11434')
+        string(name: 'LLM_ENDPOINT_B', defaultValue: 'http://100.104.14.62:21434')
+    }
+
+    environment {
+        SHARED_DIR  = "${WORKSPACE}/jenkins-k8s/shared"
+        APP_SRC_DIR = "${WORKSPACE}/app-src"
+        REPORTS_DIR = "${WORKSPACE}/app-src/reports"
+    }
+
+    stages {
+
+        stage('Load Config') {
+            steps {
+                script {
+                    def cfg = readConfig(params.APP_CONFIG)
+                    env.APP_NAME          = cfgStr(cfg, 'app', 'name')          ?: 'UnknownApp'
+                    env.REPO_URL          = cfgStr(cfg, 'app', 'repo_url')
+                    env.GIT_BRANCH        = cfgStr(cfg, 'app', 'branch')        ?: 'main'
+                    env.ANDROID_HOME_CFG  = cfgStr(cfg, 'build', 'android_home') ?: '/opt/android-sdk'
+                    env.TASK_DEBUG        = cfgStr(cfg, 'build', 'tasks', 'debug')   ?: 'assembleDebug'
+                    env.TASK_RELEASE      = cfgStr(cfg, 'build', 'tasks', 'release') ?: 'assembleRelease'
+                    env.SAST_LINT         = cfgBool(cfg, 'sast', 'lint').toString()
+                    env.SAST_SPOTBUGS     = cfgBool(cfg, 'sast', 'spotbugs').toString()
+                    env.SAST_SEMGREP      = cfgBool(cfg, 'sast', 'semgrep').toString()
+                    env.SAST_DEPCHECK     = cfgBool(cfg, 'sast', 'dependency_check').toString()
+                    env.DEPCHECK_CVSS     = cfgStr(cfg, 'sast', 'dependency_check_fail_cvss') ?: '9'
+                    env.NEXUS_ENABLED     = cfgBool(cfg, 'upload', 'nexus', 'enabled').toString()
+                    env.NEXUS_CRED_ID     = cfgStr(cfg, 'upload', 'nexus', 'credential_id')
+                    env.NEXUS_URL_VAL     = cfgStr(cfg, 'upload', 'nexus', 'url')
+                    env.JFROG_ENABLED     = cfgBool(cfg, 'upload', 'jfrog', 'enabled').toString()
+                    env.JFROG_CRED_ID     = cfgStr(cfg, 'upload', 'jfrog', 'credential_id')
+                    env.JFROG_URL_VAL     = cfgStr(cfg, 'upload', 'jfrog', 'url')
+
+                    echo """
+╔═══════════════════════════════════════════════╗
+║  Android Generic Build — Config Loaded       ║
+╠═══════════════════════════════════════════════╣
+  App     : ${env.APP_NAME}
+  Repo    : ${env.REPO_URL}
+  Branch  : ${env.GIT_BRANCH}
+  Debug   : ./gradlew ${env.TASK_DEBUG}
+  Release : ./gradlew ${env.TASK_RELEASE}
+╚═══════════════════════════════════════════════╝"""
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Checkout App') {
+            steps {
+                sh 'rm -rf "${APP_SRC_DIR}" && mkdir -p "${APP_SRC_DIR}" "${REPORTS_DIR}"'
+                dir('app-src') {
+                    git url: env.REPO_URL, branch: env.GIT_BRANCH
+                    script {
+                        env.VERSION_NAME   = sh(script: "git describe --tags --always 2>/dev/null || git rev-parse --short HEAD",
+                                                returnStdout: true).trim()
+                        env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'",
+                                                returnStdout: true).trim()
+                        env.APK_FILENAME   = "${env.APP_NAME}-${env.VERSION_NAME}-${env.BUILD_NUMBER}.apk"
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Validate') {
+            steps {
+                dir('app-src') {
+                    sh '''
+                        set -e
+                        echo "=== Environment ==="
+                        echo "ANDROID_HOME: ${ANDROID_HOME_CFG}"
+                        [ -d "${ANDROID_HOME_CFG}" ] || { echo "ANDROID_HOME not found"; exit 1; }
+                        java -version 2>&1
+                        ./gradlew --version
+                    '''
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Build Debug APK') {
+            steps {
+                dir('app-src') {
+                    sh './gradlew ${TASK_DEBUG} --stacktrace'
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Build Release APK') {
+            steps {
+                dir('app-src') {
+                    sh '''
+                        ./gradlew ${TASK_RELEASE} \
+                            -Pandroid.injected.signing.store.file="" \
+                            -Pandroid.injected.signing.key.alias="" \
+                            -Pandroid.injected.signing.store.password="" \
+                            -Pandroid.injected.signing.key.password="" \
+                            --stacktrace || true
+                    '''
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'app-src/app/build/outputs/apk/release/*.apk', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                dir('app-src') {
+                    sh './gradlew test --stacktrace'
+                }
+            }
+            post {
+                always { junit allowEmptyResults: true, testResults: 'app-src/**/build/test-results/**/*.xml' }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
+        }
+
+        stage('SAST') {
+            parallel {
+
+                stage('Android Lint') {
+                    when { expression { env.SAST_LINT == 'true' } }
+                    steps {
+                        dir('app-src') { sh './gradlew lint || true' }
+                    }
+                }
+
+                stage('SpotBugs') {
+                    when { expression { env.SAST_SPOTBUGS == 'true' } }
+                    steps {
+                        dir('app-src') { sh './gradlew spotbugsMain || true' }
+                    }
+                }
+
+                stage('Semgrep') {
+                    when { expression { env.SAST_SEMGREP == 'true' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''
+                                mkdir -p reports
+                                semgrep --config=auto --json \
+                                    --output=reports/semgrep-report.json \
+                                    --exclude="build/" . 2>/dev/null || true
+                            '''
+                        }
+                    }
+                }
+
+                stage('Dependency Check') {
+                    when { expression { env.SAST_DEPCHECK == 'true' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''
+                                mkdir -p reports/dependency-check
+                                dependency-check.sh \
+                                    --project "${APP_NAME}" \
+                                    --scan . \
+                                    --exclude "**/.git/**" \
+                                    --format HTML --format JSON \
+                                    --out reports/dependency-check/ \
+                                    --failOnCVSS "${DEPCHECK_CVSS}" || true
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    recordIssues(
+                        enabledForFailure: true,
+                        qualityGates: [],
+                        tools: [
+                            spotBugs(pattern: 'app-src/**/build/reports/spotbugs/*.xml'),
+                            androidLintParser(pattern: 'app-src/**/build/reports/lint-results*.xml')
+                        ]
+                    )
+                }
+                failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
+            }
+        }
+
+        stage('Upload') {
+            steps {
+                script {
+                    def artifact = sh(
+                        script: 'find app-src/app/build/outputs -name "*.apk" | head -1',
+                        returnStdout: true
+                    ).trim()
+                    def artifactName = env.APK_FILENAME
+                    if (artifact) {
+                        if (env.NEXUS_ENABLED == 'true') {
+                            withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID,
+                                usernameVariable: 'NEXUS_USR', passwordVariable: 'NEXUS_PSW')]) {
+                                sh """curl -sf -u "\${NEXUS_USR}:\${NEXUS_PSW}" \\
+                                    --upload-file '${artifact}' \\
+                                    "${NEXUS_URL_VAL}/${artifactName}" && echo "Nexus ok" || true"""
+                            }
+                        }
+                        if (env.JFROG_ENABLED == 'true') {
+                            withCredentials([usernamePassword(credentialsId: env.JFROG_CRED_ID,
+                                usernameVariable: 'JFROG_USR', passwordVariable: 'JFROG_PSW')]) {
+                                sh """curl -sf -u "\${JFROG_USR}:\${JFROG_PSW}" -X PUT \\
+                                    --upload-file '${artifact}' \\
+                                    "${JFROG_URL_VAL}/android/${artifactName}" && echo "JFrog ok" || true"""
+                            }
+                        }
+                    } else {
+                        echo "No APK found — skipping upload"
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        stage('Archive Reports') {
+            steps {
+                archiveArtifacts artifacts: 'app-src/reports/**', allowEmptyArchive: true, fingerprint: true
+            }
+        }
+    }
+
+    post {
+
+        success {
+            script {
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    def duration = currentBuild.durationString ?: 'N/A'
+                    emailext(
+                        subject: "✅ Android Build PASSED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL,
+                        mimeType: 'text/html',
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;background:#16a34a;color:#fff;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#9989; Android Build Passed — ${env.APP_NAME}</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">App</td><td>${env.APP_NAME}</td></tr>
+<tr><td class="lbl">Version</td><td>${env.VERSION_NAME ?: 'N/A'}</td></tr>
+<tr><td class="lbl">APK</td><td>${env.APK_FILENAME ?: 'N/A'}</td></tr>
+<tr><td class="lbl">Branch</td><td>${env.GIT_BRANCH}</td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+</table>
+<a href="${env.BUILD_URL}" class="btn">Open Build</a>
+</div>
+<div class="ftr">Jenkins CI &middot; Android Builds &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
+        }
+
+        failure {
+            script {
+                def llmReport = 'LLM analysis not available.'
+                try {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        sh """#!/bin/bash
+set +e
+cd "\${APP_SRC_DIR}"
+bash "\${SHARED_DIR}/zip-logs.sh" || true
+bash "\${SHARED_DIR}/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="Android-Gradle"
+export APP_NAME="${env.APP_NAME ?: 'Unknown'}"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\${SHARED_DIR}/llm-analysis.sh" || true
+"""
+                        if (fileExists("${env.APP_SRC_DIR}/llm-analysis.md")) {
+                            llmReport = readFile("${env.APP_SRC_DIR}/llm-analysis.md")
+                        }
+                    }
+                } catch (e) { llmReport = "LLM analysis failed: ${e.message}" }
+
+                archiveArtifacts artifacts: 'app-src/llm-analysis.md,app-src/build-logs-*.zip',
+                                  allowEmptyArchive: true
+
+                def errorSnippet = fileExists('app-src/build-error-report.txt')
+                    ? readFile('app-src/build-error-report.txt').take(2000) : 'Not captured.'
+                def llmBody = llmReport; def llmSugg = ''
+                if (llmReport.contains('## Improvement Suggestions')) {
+                    def idx = llmReport.indexOf('## Improvement Suggestions')
+                    llmBody = llmReport.take(idx).trim(); llmSugg = llmReport.substring(idx).trim()
+                }
+                def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
+                def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
+                def testSummary = 'No test data'
+                try {
+                    def tr = currentBuild.testResultAction
+                    if (tr) { def p = tr.totalCount - tr.failCount - tr.skipCount
+                        testSummary = "${p} passed · ${tr.failCount} failed · ${tr.skipCount} skipped (${tr.totalCount} total)" }
+                } catch(ignored) {}
+                def completedStages = ''
+                try {
+                    completedStages = currentBuild.getExecution().getPipelineNodes()
+                        .findAll { it.getTypeDisplayName() == 'Stage' && it.getError() == null && it.getDisplayName() != env.FAILED_STAGE }
+                        .collect { "✅ ${it.getDisplayName()}" }.join(' → ')
+                    if (completedStages) completedStages += " → ❌ ${env.FAILED_STAGE ?: 'Unknown'}"
+                } catch(ignored) { completedStages = "Failed at: ${env.FAILED_STAGE ?: 'Unknown'}" }
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(
+                        subject: "❌ Android Build FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL, mimeType: 'text/html',
+                        attachmentsPattern: 'app-src/llm-analysis.md,app-src/build-logs-*.zip',
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#c0392b,#96281b);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.fail td{background:#fff5f5!important;color:#c0392b;font-weight:700;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.llm{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:500px;overflow-y:auto;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#0078d4;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#10060; Android Build Failed — ${env.APP_NAME}</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">App</td><td>${env.APP_NAME}</td></tr>
+<tr><td class="lbl">Version</td><td>${env.VERSION_NAME ?: 'N/A'}</td></tr>
+<tr><td class="lbl">Agent</td><td>${env.NODE_NAME ?: 'android-agent'}</td></tr>
+<tr><td class="lbl">Duration</td><td>${currentBuild.durationString ?: 'N/A'}</td></tr>
+<tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+<tr><td class="lbl">&#129514; Tests</td><td>${testSummary}</td></tr>
+<tr><td class="lbl">&#128260; Stages</td><td style="font-size:12px;">${completedStages}</td></tr>
+</table>
+<div class="btns">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}console" class="btn b2">Console</a>
+<a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+</div>
+<div class="sec">&#128270; Error Snippet</div><div class="llm">${errorSnippet}</div>
+<div class="sec">&#129302; LLM Failure Analysis</div><div class="llm">${llmBodyTrunc}</div>
+<div class="sec">&#128161; Improvement Suggestions</div><div class="llm">${llmSuggTrunc.empty ? 'See llm-analysis.md artifact.' : llmSuggTrunc}</div>
+</div>
+<div class="ftr">Jenkins CI &middot; Android Builds &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
+        }
+
+        cleanup {
+            sh 'rm -rf "${APP_SRC_DIR}" 2>/dev/null || true'
+        }
+    }
+}

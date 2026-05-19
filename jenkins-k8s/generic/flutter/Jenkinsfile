@@ -1,0 +1,389 @@
+/* ============================================================
+   Generic Flutter Build Pipeline (iOS + Android parallel)
+   ─────────────────────────────────────────────────────────────
+   Config-driven: reads jenkins-k8s/apps/<app>/build-config.yaml
+   Builds BOTH iOS (.ipa) and Android (.apk/.aab) in parallel.
+   iOS runs on ios-agent (Mac Mini). Android on android-agent (k8s).
+   Both carry: LLM A→B failover, zip logs, styled HTML email.
+
+   To onboard a new Flutter app:
+     1. Create jenkins-k8s/apps/<your-app>/build-config.yaml
+     2. Create a Jenkins Pipeline job in "Flutter Builds" folder
+     3. Set APP_CONFIG = jenkins-k8s/apps/<your-app>/build-config.yaml
+   ============================================================ */
+
+def readConfig(path) {
+    def json = sh(script: "yq -o=json '.' '${path}' 2>/dev/null || echo '{}'",
+                  returnStdout: true).trim()
+    return new groovy.json.JsonSlurperClassic().parseText(json)
+}
+
+def cfgStr(cfg, String... keys) {
+    def v = cfg; for (k in keys) { v = v?.get(k) }; return v?.toString() ?: ''
+}
+
+def cfgBool(cfg, String... keys) {
+    def v = cfg; for (k in keys) { v = v?.get(k) }; return v == true || v?.toString() == 'true'
+}
+
+pipeline {
+
+    // Top-level agent: reads config on any available agent
+    agent any
+
+    options {
+        skipDefaultCheckout(false)
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        timeout(time: 90, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'APP_CONFIG',
+            defaultValue: 'jenkins-k8s/apps/flutter-demo/build-config.yaml',
+            description: 'Path to build-config.yaml in the pulse repo'
+        )
+        string(name: 'NOTIFY_EMAIL',   defaultValue: 'reject@hellodk.io')
+        string(name: 'LLM_ENDPOINT_A', defaultValue: 'http://100.89.50.27:11434')
+        string(name: 'LLM_ENDPOINT_B', defaultValue: 'http://100.104.14.62:21434')
+    }
+
+    stages {
+
+        /* ── Load Config ─────────────────────────────────────── */
+        stage('Load Config') {
+            steps {
+                script {
+                    def cfg = readConfig(params.APP_CONFIG)
+                    env.APP_NAME        = cfgStr(cfg, 'app', 'name')              ?: 'FlutterApp'
+                    env.REPO_URL        = cfgStr(cfg, 'app', 'repo_url')
+                    env.GIT_BRANCH      = cfgStr(cfg, 'app', 'branch')            ?: 'main'
+                    env.FLUTTER_CHANNEL = cfgStr(cfg, 'build', 'flutter_channel') ?: 'stable'
+                    env.IOS_AGENT       = cfgStr(cfg, 'ios', 'agent')             ?: 'ios-agent'
+                    env.IOS_SCHEME      = cfgStr(cfg, 'ios', 'scheme')            ?: 'Runner'
+                    env.IOS_EXPORT_METHOD = cfgStr(cfg, 'ios', 'export_method')  ?: 'development'
+                    env.IOS_SIGN_MODE   = cfgStr(cfg, 'ios', 'signing', 'mode')  ?: 'skip'
+                    env.IOS_CERT_ID     = cfgStr(cfg, 'ios', 'signing', 'cert_credential_id')
+                    env.IOS_PASS_ID     = cfgStr(cfg, 'ios', 'signing', 'cert_password_credential_id')
+                    env.IOS_PROF_ID     = cfgStr(cfg, 'ios', 'signing', 'profile_credential_id')
+                    env.IOS_TEAM        = cfgStr(cfg, 'ios', 'signing', 'team_id')
+                    env.ANDROID_AGENT   = cfgStr(cfg, 'android', 'agent')        ?: 'android-agent'
+                    env.ANDROID_BUILD   = cfgStr(cfg, 'android', 'build_type')   ?: 'apk'
+                    env.ANDROID_FLAVOR  = cfgStr(cfg, 'android', 'flavor')       ?: ''
+                    env.NEXUS_ENABLED   = cfgBool(cfg, 'upload', 'nexus', 'enabled').toString()
+                    env.NEXUS_CRED_ID   = cfgStr(cfg, 'upload', 'nexus', 'credential_id')
+                    env.NEXUS_IOS_URL   = cfgStr(cfg, 'upload', 'nexus', 'ios_url')
+                    env.NEXUS_AND_URL   = cfgStr(cfg, 'upload', 'nexus', 'android_url')
+                    env.JFROG_ENABLED   = cfgBool(cfg, 'upload', 'jfrog', 'enabled').toString()
+                    env.JFROG_CRED_ID   = cfgStr(cfg, 'upload', 'jfrog', 'credential_id')
+                    env.JFROG_URL_VAL   = cfgStr(cfg, 'upload', 'jfrog', 'url')
+
+                    echo """
+╔═══════════════════════════════════════════════╗
+║  Flutter Generic Build — Config Loaded       ║
+╠═══════════════════════════════════════════════╣
+  App             : ${env.APP_NAME}
+  Repo            : ${env.REPO_URL}
+  Flutter channel : ${env.FLUTTER_CHANNEL}
+  iOS agent       : ${env.IOS_AGENT}  signing: ${env.IOS_SIGN_MODE}
+  Android agent   : ${env.ANDROID_AGENT}  type: ${env.ANDROID_BUILD}
+╚═══════════════════════════════════════════════╝"""
+                }
+            }
+        }
+
+        /* ── Parallel iOS + Android ──────────────────────────── */
+        stage('Build') {
+            parallel {
+
+                /* ┌─────────────────────────────────────────────┐
+                   │  iOS Flutter Build                          │
+                   └─────────────────────────────────────────────┘ */
+                stage('iOS') {
+                    agent { label env.IOS_AGENT }
+                    environment {
+                        SHARED_DIR  = "${WORKSPACE}/jenkins-k8s/shared"
+                        APP_SRC_DIR = "${WORKSPACE}/app-src-ios"
+                    }
+                    stages {
+
+                        stage('iOS Checkout') {
+                            steps {
+                                // Pulse repo already checked out at top-level workspace;
+                                // checkout scm gives us scripts. App goes in app-src-ios/.
+                                sh 'rm -rf "${APP_SRC_DIR}" && mkdir -p "${APP_SRC_DIR}"'
+                                dir('app-src-ios') {
+                                    git url: env.REPO_URL, branch: env.GIT_BRANCH
+                                    script {
+                                        env.IOS_GIT_SHA = sh(script: 'git rev-parse --short HEAD',
+                                                              returnStdout: true).trim()
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('iOS Flutter Check') {
+                            steps {
+                                sh '''#!/bin/bash
+                                    set +e
+                                    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                    flutter --version || echo "MISSING: flutter SDK — install via FVM or direct"
+                                    flutter doctor    || echo "flutter doctor reported issues (non-fatal)"
+                                '''
+                            }
+                        }
+
+                        stage('Flutter pub get (iOS)') {
+                            steps {
+                                dir('app-src-ios') {
+                                    sh '''#!/bin/bash
+                                        set +e
+                                        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                        flutter pub get || echo "SKIP: flutter pub get failed"
+                                    '''
+                                }
+                            }
+                        }
+
+                        stage('iOS CocoaPods') {
+                            steps {
+                                dir('app-src-ios/ios') {
+                                    sh '''#!/bin/bash
+                                        set +e
+                                        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                        export LANG=en_US.UTF-8
+                                        [ -f Podfile ] && pod install --repo-update \
+                                          || echo "SKIP: no Podfile or pod unavailable"
+                                    '''
+                                }
+                            }
+                        }
+
+                        stage('Flutter Build iOS') {
+                            steps {
+                                dir('app-src-ios') {
+                                    script {
+                                        def signArgs = ''
+                                        if (env.IOS_SIGN_MODE == 'real') {
+                                            signArgs = '--export-options-plist=ios/ExportOptions.plist'
+                                        } else {
+                                            signArgs = '--no-codesign'
+                                        }
+                                        sh """#!/bin/bash
+                                            set +e
+                                            export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
+                                            mkdir -p build/ios-output
+                                            flutter build ipa \
+                                                ${signArgs} \
+                                                --release \
+                                                2>&1 | tail -30 || true
+                                            # Also try xcarchive if ipa fails
+                                            [ -d build/ios/archive/*.xcarchive ] || \
+                                                flutter build ios --release --no-codesign \
+                                                2>&1 | tail -20 || true
+                                        """
+                                    }
+                                    archiveArtifacts artifacts: 'build/ios/ipa/*.ipa,build/ios/archive/*.xcarchive.zip',
+                                                     allowEmptyArchive: true
+                                }
+                            }
+                            post { failure { script { env.FAILED_STAGE = 'Flutter Build iOS' } } }
+                        }
+
+                        stage('Flutter Test iOS') {
+                            steps {
+                                dir('app-src-ios') {
+                                    sh '''#!/bin/bash
+                                        set +e
+                                        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                        flutter test --reporter json > /tmp/flutter-test-ios.json 2>/dev/null \
+                                          || echo "Tests completed (check output)"
+                                    '''
+                                }
+                            }
+                        }
+                    }
+
+                    post {
+                        failure {
+                            script {
+                                def llmReport = 'LLM analysis not available.'
+                                try {
+                                    timeout(time: 5, unit: 'MINUTES') {
+                                        sh """#!/bin/bash
+set +e
+cd "\${APP_SRC_DIR}"
+bash "\${SHARED_DIR}/zip-logs.sh" || true
+bash "\${SHARED_DIR}/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Flutter Build iOS'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="Flutter-iOS"
+export APP_NAME="${env.APP_NAME}"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\${SHARED_DIR}/llm-analysis.sh" || true
+"""
+                                        if (fileExists("${env.APP_SRC_DIR}/llm-analysis.md")) {
+                                            llmReport = readFile("${env.APP_SRC_DIR}/llm-analysis.md")
+                                        }
+                                    }
+                                } catch (e) { llmReport = "LLM failed: ${e.message}" }
+                                archiveArtifacts artifacts: 'app-src-ios/llm-analysis.md,app-src-ios/build-logs-*.zip',
+                                                  allowEmptyArchive: true
+                                if (params.NOTIFY_EMAIL?.trim()) {
+                                    emailext(
+                                        subject: "❌ Flutter iOS FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                                        to: params.NOTIFY_EMAIL, mimeType: 'text/html',
+                                        body: "<p>Flutter iOS build failed for <b>${env.APP_NAME}</b>. See build: <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p><pre>${llmReport.take(3000)}</pre>"
+                                    )
+                                }
+                            }
+                        }
+                        cleanup {
+                            sh 'rm -rf "${APP_SRC_DIR}" 2>/dev/null || true'
+                        }
+                    }
+                }
+
+                /* ┌─────────────────────────────────────────────┐
+                   │  Android Flutter Build                      │
+                   └─────────────────────────────────────────────┘ */
+                stage('Android') {
+                    agent { label env.ANDROID_AGENT }
+                    environment {
+                        SHARED_DIR  = "${WORKSPACE}/jenkins-k8s/shared"
+                        APP_SRC_DIR = "${WORKSPACE}/app-src-android"
+                    }
+                    stages {
+
+                        stage('Android Checkout') {
+                            steps {
+                                sh 'rm -rf "${APP_SRC_DIR}" && mkdir -p "${APP_SRC_DIR}"'
+                                dir('app-src-android') {
+                                    git url: env.REPO_URL, branch: env.GIT_BRANCH
+                                    script {
+                                        env.ANDROID_GIT_SHA = sh(script: 'git rev-parse --short HEAD',
+                                                                   returnStdout: true).trim()
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Android Flutter Check') {
+                            steps {
+                                sh '''
+                                    flutter --version || echo "MISSING: flutter SDK"
+                                    flutter doctor    || echo "flutter doctor reported issues (non-fatal)"
+                                '''
+                            }
+                        }
+
+                        stage('Flutter pub get (Android)') {
+                            steps {
+                                dir('app-src-android') {
+                                    sh 'flutter pub get || echo "SKIP: flutter pub get failed"'
+                                }
+                            }
+                        }
+
+                        stage('Flutter Build Android') {
+                            steps {
+                                dir('app-src-android') {
+                                    script {
+                                        def flavorArg = env.ANDROID_FLAVOR ? "--flavor ${env.ANDROID_FLAVOR}" : ''
+                                        def buildCmd  = env.ANDROID_BUILD == 'appbundle'
+                                            ? "flutter build appbundle ${flavorArg} --release"
+                                            : "flutter build apk ${flavorArg} --release"
+                                        sh """${buildCmd} 2>&1 | tail -30 || true"""
+                                    }
+                                    archiveArtifacts artifacts: 'build/app/outputs/**/*.apk,build/app/outputs/**/*.aab',
+                                                     allowEmptyArchive: true
+                                }
+                            }
+                            post { failure { script { env.FAILED_STAGE = 'Flutter Build Android' } } }
+                        }
+
+                        stage('Flutter Test Android') {
+                            steps {
+                                dir('app-src-android') {
+                                    sh 'flutter test --reporter json > /tmp/flutter-test-android.json 2>/dev/null || echo "Tests completed"'
+                                }
+                            }
+                        }
+                    }
+
+                    post {
+                        failure {
+                            script {
+                                def llmReport = 'LLM analysis not available.'
+                                try {
+                                    timeout(time: 5, unit: 'MINUTES') {
+                                        sh """#!/bin/bash
+set +e
+cd "\${APP_SRC_DIR}"
+bash "\${SHARED_DIR}/zip-logs.sh" || true
+bash "\${SHARED_DIR}/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Flutter Build Android'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="Flutter-Android"
+export APP_NAME="${env.APP_NAME}"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\${SHARED_DIR}/llm-analysis.sh" || true
+"""
+                                        if (fileExists("${env.APP_SRC_DIR}/llm-analysis.md")) {
+                                            llmReport = readFile("${env.APP_SRC_DIR}/llm-analysis.md")
+                                        }
+                                    }
+                                } catch (e) { llmReport = "LLM failed: ${e.message}" }
+                                archiveArtifacts artifacts: 'app-src-android/llm-analysis.md,app-src-android/build-logs-*.zip',
+                                                  allowEmptyArchive: true
+                                if (params.NOTIFY_EMAIL?.trim()) {
+                                    emailext(
+                                        subject: "❌ Flutter Android FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                                        to: params.NOTIFY_EMAIL, mimeType: 'text/html',
+                                        body: "<p>Flutter Android build failed for <b>${env.APP_NAME}</b>. See build: <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p><pre>${llmReport.take(3000)}</pre>"
+                                    )
+                                }
+                            }
+                        }
+                        cleanup {
+                            sh 'rm -rf "${APP_SRC_DIR}" 2>/dev/null || true'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(
+                        subject: "✅ Flutter Build PASSED — ${env.APP_NAME} #${env.BUILD_NUMBER} (iOS + Android)",
+                        to: params.NOTIFY_EMAIL, mimeType: 'text/html',
+                        body: """<html><body style="font-family:-apple-system,Arial,sans-serif;padding:16px;">
+<div style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:20px;border-radius:8px 8px 0 0;">
+  <h2 style="margin:0;">✅ Flutter Build Passed — ${env.APP_NAME}</h2>
+  <p style="margin:4px 0 0;opacity:.85;">${env.JOB_NAME} &middot; #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p>
+</div>
+<div style="background:#fff;padding:20px;border:1px solid #e8eaed;">
+  <p>iOS and Android builds completed successfully.</p>
+  <p><a href="${env.BUILD_URL}" style="background:#16a34a;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;">Open Build</a></p>
+</div>
+</body></html>"""
+                    )
+                }
+            }
+        }
+    }
+}

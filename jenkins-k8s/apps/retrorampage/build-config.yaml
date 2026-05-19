@@ -1,0 +1,33 @@
+## RetroRampage — iOS Swift build config
+## Used by jenkins-k8s/generic/ios/Jenkinsfile
+
+app:
+  name: RetroRampage
+  repo_url: https://github.com/nicklockwood/RetroRampage.git
+  branch: master
+
+agent:
+  label: ios-agent
+
+build:
+  type: swift                 # swift | react-native | fastlane
+  # project auto-detected via find . -name "*.xcodeproj"
+  configuration: Release
+  simulator: "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest"
+
+signing:
+  mode: skip
+
+sast:
+  swiftlint: true
+  semgrep: true
+
+upload:
+  nexus:
+    enabled: false
+    credential_id: nexus-creds
+    url: http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases
+  jfrog:
+    enabled: false
+    credential_id: jfrog-creds
+    url: http://100.89.50.27:30082/artifactory/example-repo-local

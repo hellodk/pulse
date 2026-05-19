@@ -1,0 +1,37 @@
+## Flutter Demo — Flutter iOS + Android build config
+## Used by jenkins-k8s/generic/flutter/Jenkinsfile
+
+app:
+  name: FlutterDemo
+  repo_url: https://github.com/flutter/gallery.git
+  branch: main
+
+build:
+  flutter_channel: stable     # stable | beta | main
+
+ios:
+  agent: ios-agent
+  scheme: Runner
+  export_method: development  # development | ad-hoc | enterprise | app-store
+  signing:
+    mode: skip                # skip | real
+    # cert_credential_id: ios-dist-p12
+    # cert_password_credential_id: ios-dist-p12-pass
+    # profile_credential_id: ios-dist-profile
+    # team_id: ABCD1234EF
+
+android:
+  agent: android-agent
+  build_type: apk             # apk | appbundle
+  flavor: ""                  # leave empty if no flavors defined
+
+upload:
+  nexus:
+    enabled: false
+    credential_id: nexus-creds
+    ios_url: http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases
+    android_url: http://nexus.utilities.svc.cluster.local:8081/repository/android-releases
+  jfrog:
+    enabled: false
+    credential_id: jfrog-creds
+    url: http://100.89.50.27:30082/artifactory/example-repo-local

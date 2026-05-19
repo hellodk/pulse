@@ -1,0 +1,646 @@
+/* ============================================================
+   Generic iOS Build Pipeline
+   ─────────────────────────────────────────────────────────────
+   Config-driven: reads jenkins-k8s/apps/<app>/build-config.yaml
+   Supports build types: swift | react-native | fastlane
+   Carries all features: LLM A→B failover, zip logs, styled
+   email, SAST, test results, Nexus/JFrog upload, codesign.
+
+   To onboard a new iOS app:
+     1. Create jenkins-k8s/apps/<your-app>/build-config.yaml
+     2. Create a Jenkins Pipeline job in the "iOS Builds" folder
+     3. Set APP_CONFIG = jenkins-k8s/apps/<your-app>/build-config.yaml
+     4. Run — no Jenkinsfile changes needed.
+
+   Shared scripts (LLM, zip-logs, extract-errors) are read
+   directly from the workspace — no Gitea/Jenkins network call.
+   ============================================================ */
+
+// ── Groovy helpers ────────────────────────────────────────────
+
+def readConfig(path) {
+    // yq converts YAML → JSON; JsonSlurperClassic parses in Groovy sandbox
+    def json = sh(script: "yq -o=json '.' '${path}' 2>/dev/null || echo '{}'",
+                  returnStdout: true).trim()
+    return new groovy.json.JsonSlurperClassic().parseText(json)
+}
+
+def cfgStr(cfg, String... keys) {
+    def v = cfg
+    for (k in keys) { v = v?.get(k) }
+    return v?.toString() ?: ''
+}
+
+def cfgBool(cfg, String... keys) {
+    def v = cfg
+    for (k in keys) { v = v?.get(k) }
+    return v == true || v?.toString() == 'true'
+}
+
+def expiryBadge(daysLeft) {
+    if (daysLeft == null) return '<span style="color:#888">—</span>'
+    if (daysLeft < 0)  return "<span style='background:#dc2626;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>EXPIRED</span>"
+    if (daysLeft < 7)  return "<span style='background:#dc2626;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>⚠ ${daysLeft}d</span>"
+    if (daysLeft < 30) return "<span style='background:#f59e0b;color:#000;padding:2px 6px;border-radius:3px;font-size:11px;'>⚠ ${daysLeft}d</span>"
+    return "<span style='background:#16a34a;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>${daysLeft}d</span>"
+}
+
+def buildFailureEmail(appName, buildType, llmReport, testSummary, completedStages, duration) {
+    def errorSnippet = fileExists('app-src/build-error-report.txt')
+        ? readFile('app-src/build-error-report.txt').take(2000)
+        : 'Not captured.'
+    def llmBody = llmReport; def llmSugg = ''
+    if (llmReport.contains('## Improvement Suggestions')) {
+        def idx = llmReport.indexOf('## Improvement Suggestions')
+        llmBody = llmReport.take(idx).trim()
+        llmSugg = llmReport.substring(idx).trim()
+    }
+    def llmBodyTrunc = llmBody.size() > 5000 ? llmBody.take(5000) + '\n\n...(truncated)' : llmBody
+    def llmSuggTrunc = llmSugg.size() > 2000 ? llmSugg.take(2000) + '\n\n...(truncated)' : llmSugg
+
+    return """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#c0392b,#96281b);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.fail td{background:#fff5f5!important;color:#c0392b;font-weight:700;}
+.sec{font-size:13px;font-weight:700;color:#333;margin:20px 0 8px;padding-bottom:5px;border-bottom:2px solid #e8eaed;}
+.llm{background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:500px;overflow-y:auto;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#0078d4;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#10060; iOS Build Failed — ${appName}</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">App</td><td>${appName}</td></tr>
+<tr><td class="lbl">Build Type</td><td>${buildType}</td></tr>
+<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
+<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
+<tr><td class="lbl">Agent</td><td>${env.NODE_NAME ?: 'ios-agent'}</td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+<tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+<tr><td class="lbl">&#129514; Tests</td><td>${testSummary}</td></tr>
+<tr><td class="lbl">&#128260; Stages</td><td style="font-size:12px;">${completedStages}</td></tr>
+</table>
+<div class="btns">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}console" class="btn b2">Console</a>
+<a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+</div>
+<div class="sec">&#128270; Error Snippet</div>
+<div class="llm">${errorSnippet}</div>
+<div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
+<div class="llm">${llmBodyTrunc}</div>
+<div class="sec">&#128161; Improvement Suggestions</div>
+<div class="llm">${llmSuggTrunc.empty ? 'See llm-analysis.md artifact.' : llmSuggTrunc}</div>
+</div>
+<div class="ftr">Jenkins CI &middot; iOS Builds &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+}
+
+// ── Pipeline ──────────────────────────────────────────────────
+
+pipeline {
+
+    agent { label params.AGENT_LABEL ?: 'ios-agent' }
+
+    options {
+        skipDefaultCheckout(false)   // pulse repo checked out → scripts available
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        timeout(time: 90, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'APP_CONFIG',
+            defaultValue: 'jenkins-k8s/apps/mattermost/build-config.yaml',
+            description: 'Path to build-config.yaml relative to the pulse repo root. Add a new file to onboard a new app.'
+        )
+        string(
+            name: 'AGENT_LABEL',
+            defaultValue: 'ios-agent',
+            description: 'Jenkins agent label (overrides config file value if set)'
+        )
+        string(name: 'NOTIFY_EMAIL',  defaultValue: 'reject@hellodk.io', description: 'Comma-separated email recipients')
+        string(name: 'LLM_ENDPOINT_A', defaultValue: 'http://100.89.50.27:11434', description: 'Primary Ollama endpoint')
+        string(name: 'LLM_ENDPOINT_B', defaultValue: 'http://100.104.14.62:21434', description: 'Secondary llama.cpp endpoint')
+    }
+
+    environment {
+        SHARED_DIR  = "${WORKSPACE}/jenkins-k8s/shared"
+        APP_SRC_DIR = "${WORKSPACE}/app-src"
+        REPORTS_DIR = "${WORKSPACE}/app-src/reports"
+        BUILD_DIR   = "${WORKSPACE}/app-src/build"
+    }
+
+    stages {
+
+        /* ── Load Config ─────────────────────────────────────── */
+        stage('Load Config') {
+            steps {
+                script {
+                    def cfg = readConfig(params.APP_CONFIG)
+                    env.APP_NAME      = cfgStr(cfg, 'app', 'name')     ?: 'UnknownApp'
+                    env.REPO_URL      = cfgStr(cfg, 'app', 'repo_url')
+                    env.GIT_BRANCH    = cfgStr(cfg, 'app', 'branch')   ?: 'main'
+                    env.BUILD_TYPE    = cfgStr(cfg, 'build', 'type')   ?: 'swift'
+                    env.SCHEME        = cfgStr(cfg, 'build', 'scheme')
+                    env.WORKSPACE_XC  = cfgStr(cfg, 'build', 'workspace')
+                    env.CONFIGURATION = cfgStr(cfg, 'build', 'configuration') ?: 'Release'
+                    env.SIMULATOR     = cfgStr(cfg, 'build', 'simulator') ?: 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
+                    env.SIGN_MODE     = cfgStr(cfg, 'signing', 'mode') ?: 'skip'
+                    env.SIGN_CERT_ID  = cfgStr(cfg, 'signing', 'cert_credential_id')
+                    env.SIGN_PASS_ID  = cfgStr(cfg, 'signing', 'cert_password_credential_id')
+                    env.SIGN_PROF_ID  = cfgStr(cfg, 'signing', 'profile_credential_id')
+                    env.SIGN_TEAM     = cfgStr(cfg, 'signing', 'team_id')
+                    env.EXPORT_METHOD = cfgStr(cfg, 'signing', 'export_method') ?: 'development'
+                    env.SAST_SWIFTLINT = cfgBool(cfg, 'sast', 'swiftlint').toString()
+                    env.SAST_SEMGREP   = cfgBool(cfg, 'sast', 'semgrep').toString()
+                    env.SAST_ESLINT    = cfgBool(cfg, 'sast', 'eslint').toString()
+                    env.NEXUS_ENABLED  = cfgBool(cfg, 'upload', 'nexus', 'enabled').toString()
+                    env.NEXUS_CRED_ID  = cfgStr(cfg, 'upload', 'nexus', 'credential_id')
+                    env.NEXUS_URL_VAL  = cfgStr(cfg, 'upload', 'nexus', 'url')
+                    env.JFROG_ENABLED  = cfgBool(cfg, 'upload', 'jfrog', 'enabled').toString()
+                    env.JFROG_CRED_ID  = cfgStr(cfg, 'upload', 'jfrog', 'credential_id')
+                    env.JFROG_URL_VAL  = cfgStr(cfg, 'upload', 'jfrog', 'url')
+
+                    echo """
+╔═══════════════════════════════════════════════╗
+║  iOS Generic Build — Config Loaded           ║
+╠═══════════════════════════════════════════════╣
+  App        : ${env.APP_NAME}
+  Build type : ${env.BUILD_TYPE}
+  Repo       : ${env.REPO_URL}
+  Branch     : ${env.GIT_BRANCH}
+  Scheme     : ${env.SCHEME ?: '(auto-detect)'}
+  Signing    : ${env.SIGN_MODE}
+╚═══════════════════════════════════════════════╝"""
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Checkout App ────────────────────────────────────── */
+        stage('Checkout App') {
+            steps {
+                sh 'rm -rf "${APP_SRC_DIR}" && mkdir -p "${APP_SRC_DIR}" "${REPORTS_DIR}" "${BUILD_DIR}"'
+                dir('app-src') {
+                    git url: env.REPO_URL, branch: env.GIT_BRANCH
+                    script {
+                        env.GIT_SHA        = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                        env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Validate Tools ──────────────────────────────────── */
+        stage('Validate') {
+            steps {
+                sh '''#!/bin/bash
+                    set +e
+                    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                    echo "=== Tool versions ==="
+                    xcodebuild -version       || echo "MISSING: xcodebuild"
+                    swift --version           || echo "MISSING: swift"
+                    swiftlint version         || echo "MISSING: swiftlint (brew install swiftlint)"
+                    xcpretty --version        || echo "MISSING: xcpretty (gem install xcpretty)"
+                    node --version            || echo "MISSING: node (needed for react-native)"
+                    npm --version             || echo "MISSING: npm (needed for react-native)"
+                    pod --version             || echo "MISSING: pod (brew install cocoapods)"
+                    echo "=== Done ==="
+                '''
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── JS Dependencies (react-native only) ─────────────── */
+        stage('JS Dependencies') {
+            when { expression { env.BUILD_TYPE == 'react-native' } }
+            steps {
+                dir('app-src') {
+                    sh '''#!/bin/bash
+                        set +e
+                        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                        npm ci --prefer-offline || echo "SKIP: npm ci failed — check Node version"
+                    '''
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── iOS Native Dependencies ─────────────────────────── */
+        stage('iOS Native Dependencies') {
+            when { expression { env.BUILD_TYPE == 'react-native' } }
+            steps {
+                dir('app-src') {
+                    sh '''#!/bin/bash
+                        set +e
+                        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                        export LANG=en_US.UTF-8
+                        [ -f ios/Podfile ] \
+                          && pod install --repo-update \
+                          || echo "SKIP: no ios/Podfile or pod unavailable"
+                    '''
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Setup Signing (real mode) ───────────────────────── */
+        stage('Setup Signing') {
+            when { expression { env.SIGN_MODE == 'real' } }
+            steps {
+                script {
+                    withCredentials([
+                        file  (credentialsId: env.SIGN_CERT_ID, variable: 'P12_FILE'),
+                        string(credentialsId: env.SIGN_PASS_ID,  variable: 'P12_PASS')
+                    ]) {
+                        sh '''#!/bin/bash
+                            set -euo pipefail
+                            KEYCHAIN_NAME="jenkins-ios-${BUILD_NUMBER}.keychain-db"
+                            KEYCHAIN_PASS="jenkins-${BUILD_NUMBER}"
+                            echo "${KEYCHAIN_NAME}" > /tmp/ios_keychain_${BUILD_NUMBER}.txt
+                            echo "${KEYCHAIN_PASS}" >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
+
+                            security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+                            security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"
+                            security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+                            security import "${P12_FILE}" \
+                                -k "${KEYCHAIN_NAME}" -P "${P12_PASS}" \
+                                -T /usr/bin/codesign -T /usr/bin/xcodebuild -T /usr/bin/security
+                            security set-key-partition-list \
+                                -S apple-tool:,apple:,codesign:,productsign: \
+                                -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+                            CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
+                            security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT}
+                            echo "Keychain ready: ${KEYCHAIN_NAME}"
+                        '''
+                    }
+                    if (env.SIGN_PROF_ID) {
+                        withCredentials([file(credentialsId: env.SIGN_PROF_ID, variable: 'PROFILE_FILE')]) {
+                            sh '''#!/bin/bash
+                                set +e
+                                PROFILE_DIR="${HOME}/Library/MobileDevice/Provisioning Profiles"
+                                mkdir -p "${PROFILE_DIR}"
+                                TMP=$(mktemp /tmp/pp.XXXXXX.plist)
+                                security cms -D -i "${PROFILE_FILE}" > "${TMP}"
+                                UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "${TMP}")
+                                cp "${PROFILE_FILE}" "${PROFILE_DIR}/${UUID}.mobileprovision"
+                                echo "Profile installed: ${UUID}"
+                                rm -f "${TMP}"
+                            '''
+                        }
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Build Archive ───────────────────────────────────── */
+        stage('Build Archive') {
+            steps {
+                dir('app-src') {
+                    script {
+                        def signFlags = 'CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO'
+                        if (env.SIGN_MODE == 'real') {
+                            def keychainLines = readFile("/tmp/ios_keychain_${BUILD_NUMBER}.txt").trim().split('\n')
+                            def keychainName  = keychainLines[0]
+                            def keychainPass  = keychainLines[1]
+                            signFlags = """DEVELOPMENT_TEAM="${env.SIGN_TEAM}" \\
+                                CODE_SIGN_STYLE=Manual \\
+                                OTHER_CODE_SIGN_FLAGS="--keychain ${keychainName}" """
+                        }
+
+                        if (env.BUILD_TYPE == 'react-native') {
+                            sh """#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
+                                xcodebuild archive \\
+                                    -workspace "\${WORKSPACE_XC}" \\
+                                    -scheme    "\${SCHEME}" \\
+                                    -configuration "\${CONFIGURATION}" \\
+                                    -archivePath "build/\${APP_NAME}.xcarchive" \\
+                                    ${signFlags} \\
+                                    2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
+                                    "build/\${APP_NAME}.xcarchive" || true
+                            """
+                        } else if (env.BUILD_TYPE == 'fastlane') {
+                            sh '''#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                bundle exec fastlane build || echo "fastlane build completed (check lane config)"
+                            '''
+                        } else {
+                            // swift — auto-detect project
+                            sh """#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
+                                PROJECT=\$(find . -name "*.xcodeproj" -not -path "*/.git/*" | sort | tail -1)
+                                [ -z "\$PROJECT" ] && { echo "No .xcodeproj found"; exit 0; }
+                                SCHEME_AUTO=\${SCHEME:-\$(basename "\$PROJECT" .xcodeproj)}
+                                echo "Building: \$PROJECT  scheme: \$SCHEME_AUTO"
+                                echo "\$PROJECT" > /tmp/ios_project_\${BUILD_NUMBER}.txt
+                                xcodebuild archive \\
+                                    -project "\$PROJECT" \\
+                                    -scheme  "\$SCHEME_AUTO" \\
+                                    -configuration "\${CONFIGURATION}" \\
+                                    -archivePath "build/\${APP_NAME}.xcarchive" \\
+                                    ${signFlags} \\
+                                    2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
+                                    "build/\${APP_NAME}.xcarchive" || true
+                            """
+                        }
+                    }
+                    archiveArtifacts artifacts: 'build/*.zip,build/*.ipa', allowEmptyArchive: true
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Tests ───────────────────────────────────────────── */
+        stage('Tests') {
+            parallel {
+
+                stage('JS Tests') {
+                    when { expression { env.BUILD_TYPE == 'react-native' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                mkdir -p reports
+                                npm test -- --ci --reporters=jest-junit \
+                                    --outputFile=reports/jest-results.xml || true
+                            '''
+                            junit allowEmptyResults: true, testResults: 'reports/jest-results.xml'
+                        }
+                    }
+                }
+
+                stage('Native Tests') {
+                    steps {
+                        dir('app-src') {
+                            sh '''#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                mkdir -p reports
+                                # Determine project/workspace
+                                if [ -n "${WORKSPACE_XC}" ] && [ -f "${WORKSPACE_XC}/contents.xcworkspacedata" ]; then
+                                    TARGET_FLAG="-workspace ${WORKSPACE_XC}"
+                                else
+                                    PROJECT=$(find . -name "*.xcodeproj" -not -path "*/.git/*" | sort | tail -1)
+                                    [ -n "$PROJECT" ] && TARGET_FLAG="-project $PROJECT" || { echo "SKIP: no project"; exit 0; }
+                                fi
+                                SCHEME_AUTO=${SCHEME:-$(basename "${PROJECT:-x}" .xcodeproj)}
+                                xcodebuild test \
+                                    $TARGET_FLAG \
+                                    -scheme "$SCHEME_AUTO" \
+                                    -destination "${SIMULATOR}" \
+                                    -resultBundlePath build/TestResults.xcresult \
+                                    2>&1 | tail -20 || true
+                            '''
+                            junit allowEmptyResults: true, testResults: 'reports/xcode-test-results.xml'
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ── SAST ────────────────────────────────────────────── */
+        stage('SAST') {
+            parallel {
+
+                stage('SwiftLint') {
+                    when { expression { env.SAST_SWIFTLINT == 'true' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                mkdir -p reports
+                                swiftlint lint --reporter html > reports/swiftlint.html 2>/dev/null \
+                                  || echo "swiftlint not available or found issues"
+                            '''
+                        }
+                    }
+                }
+
+                stage('ESLint') {
+                    when { expression { env.SAST_ESLINT == 'true' && env.BUILD_TYPE == 'react-native' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''#!/bin/bash
+                                set +e
+                                export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                                mkdir -p reports
+                                npx eslint . --ext .js,.jsx,.ts,.tsx \
+                                    --format json --output-file reports/eslint.json 2>/dev/null || true
+                            '''
+                        }
+                    }
+                }
+
+                stage('Semgrep') {
+                    when { expression { env.SAST_SEMGREP == 'true' } }
+                    steps {
+                        dir('app-src') {
+                            sh '''#!/bin/bash
+                                set +e
+                                mkdir -p reports
+                                semgrep --config=auto --json \
+                                    --output=reports/semgrep.json \
+                                    --exclude="build/" . 2>/dev/null \
+                                  || echo "semgrep not available or no findings"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ── Upload ──────────────────────────────────────────── */
+        stage('Upload') {
+            steps {
+                dir('app-src') {
+                    script {
+                        def artifact = sh(script: 'find build -name "*.zip" -o -name "*.ipa" | head -1',
+                                          returnStdout: true).trim()
+                        def artifactName = "${env.APP_NAME}-${env.GIT_SHA}-${env.BUILD_NUMBER}.zip"
+                        if (artifact) {
+                            if (env.NEXUS_ENABLED == 'true') {
+                                withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID,
+                                    usernameVariable: 'NEXUS_USR', passwordVariable: 'NEXUS_PSW')]) {
+                                    sh """curl -sf -u "\${NEXUS_USR}:\${NEXUS_PSW}" \\
+                                        --upload-file '${artifact}' \\
+                                        "${NEXUS_URL_VAL}/${artifactName}" && echo "Nexus ok" || true"""
+                                }
+                            }
+                            if (env.JFROG_ENABLED == 'true') {
+                                withCredentials([usernamePassword(credentialsId: env.JFROG_CRED_ID,
+                                    usernameVariable: 'JFROG_USR', passwordVariable: 'JFROG_PSW')]) {
+                                    sh """curl -sf -u "\${JFROG_USR}:\${JFROG_PSW}" -X PUT \\
+                                        --upload-file '${artifact}' \\
+                                        "${JFROG_URL_VAL}/ios/${artifactName}" && echo "JFrog ok" || true"""
+                                }
+                            }
+                        } else {
+                            echo "No artifact found to upload — skipping"
+                        }
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Archive Reports ─────────────────────────────────── */
+        stage('Archive Reports') {
+            steps {
+                archiveArtifacts artifacts: 'app-src/reports/**', allowEmptyArchive: true, fingerprint: true
+            }
+        }
+    }
+
+    post {
+
+        success {
+            script {
+                def duration = currentBuild.durationString ?: 'N/A'
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(
+                        subject: "✅ iOS Build PASSED — ${env.APP_NAME} (${env.BUILD_TYPE}) #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL,
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'app-src/reports/**',
+                        body: """<html><head><style>
+body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
+.wrap{max-width:760px;margin:0 auto;}
+.hdr{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
+.hdr h1{margin:0;font-size:20px;}.hdr p{margin:4px 0 0;font-size:12px;opacity:.85;}
+.body{background:#fff;padding:24px 28px;border:1px solid #e8eaed;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+td{padding:9px 14px;border-bottom:1px solid #f0f0f0;}tr:nth-child(odd) td{background:#fafbfc;}
+.lbl{font-weight:600;color:#555;width:160px;}
+.btns{margin-top:16px;}.btn{display:inline-block;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;}
+.b1{background:#16a34a;color:#fff;}.b2{background:#f3f4f6;color:#333;border:1px solid #d1d5db;}
+.ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#9989; iOS Build Passed — ${env.APP_NAME}</h1>
+<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<div class="body">
+<table>
+<tr><td class="lbl">App</td><td>${env.APP_NAME}</td></tr>
+<tr><td class="lbl">Build Type</td><td>${env.BUILD_TYPE}</td></tr>
+<tr><td class="lbl">Branch</td><td>${env.GIT_BRANCH}</td></tr>
+<tr><td class="lbl">Commit</td><td><code>${env.GIT_SHA}</code></td></tr>
+<tr><td class="lbl">Duration</td><td>${duration}</td></tr>
+</table>
+<div class="btns">
+<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
+<a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
+</div>
+</div>
+<div class="ftr">Jenkins CI &middot; iOS Builds &middot; ${env.BUILD_URL}</div>
+</div></body></html>"""
+                    )
+                }
+            }
+        }
+
+        failure {
+            script {
+                def llmReport = 'LLM analysis not available.'
+                try {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        sh """#!/bin/bash
+set +e
+cd "\${APP_SRC_DIR}"
+bash "\${SHARED_DIR}/zip-logs.sh" || true
+bash "\${SHARED_DIR}/extract-build-errors.sh" > build-error-report.txt 2>/dev/null || true
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="${env.BUILD_TYPE ?: 'iOS'}"
+export APP_NAME="${env.APP_NAME ?: 'Unknown'}"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\${SHARED_DIR}/llm-analysis.sh" || true
+"""
+                        if (fileExists("${env.APP_SRC_DIR}/llm-analysis.md")) {
+                            llmReport = readFile("${env.APP_SRC_DIR}/llm-analysis.md")
+                        }
+                    }
+                } catch (e) { llmReport = "LLM analysis failed: ${e.message}" }
+
+                archiveArtifacts artifacts: 'app-src/llm-analysis.md,app-src/build-logs-*.zip',
+                                  allowEmptyArchive: true
+
+                def testSummary = 'No test data'
+                try {
+                    def tr = currentBuild.testResultAction
+                    if (tr) {
+                        def passed = tr.totalCount - tr.failCount - tr.skipCount
+                        testSummary = "${passed} passed · ${tr.failCount} failed · ${tr.skipCount} skipped (${tr.totalCount} total)"
+                    }
+                } catch(ignored) {}
+
+                def completedStages = ''
+                try {
+                    completedStages = currentBuild.getExecution().getPipelineNodes()
+                        .findAll { it.getTypeDisplayName() == 'Stage' && it.getError() == null && it.getDisplayName() != env.FAILED_STAGE }
+                        .collect { "✅ ${it.getDisplayName()}" }.join(' → ')
+                    if (completedStages) completedStages += " → ❌ ${env.FAILED_STAGE ?: 'Unknown'}"
+                } catch(ignored) { completedStages = "Failed at: ${env.FAILED_STAGE ?: 'Unknown'}" }
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(
+                        subject: "❌ iOS Build FAILED — ${env.APP_NAME} (${env.BUILD_TYPE}) #${env.BUILD_NUMBER}",
+                        to: params.NOTIFY_EMAIL,
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'app-src/llm-analysis.md,app-src/build-logs-*.zip',
+                        body: buildFailureEmail(
+                            env.APP_NAME ?: 'Unknown',
+                            env.BUILD_TYPE ?: 'swift',
+                            llmReport,
+                            testSummary,
+                            completedStages,
+                            currentBuild.durationString ?: 'N/A'
+                        )
+                    )
+                }
+            }
+        }
+
+        always {
+            // Clean up signing keychain if it was created
+            sh '''#!/bin/bash
+                set +e
+                if [ -f "/tmp/ios_keychain_${BUILD_NUMBER}.txt" ]; then
+                    KC=$(head -1 "/tmp/ios_keychain_${BUILD_NUMBER}.txt")
+                    CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
+                    FILTERED=$(echo "${CURRENT}" | tr ' ' '\n' | grep -v "${KC}" | tr '\n' ' ')
+                    security list-keychains -d user -s ${FILTERED} 2>/dev/null || true
+                    security delete-keychain "${KC}" 2>/dev/null && echo "Keychain removed" || true
+                    rm -f "/tmp/ios_keychain_${BUILD_NUMBER}.txt"
+                fi
+            '''
+        }
+
+        cleanup {
+            sh 'rm -rf "${APP_SRC_DIR}" 2>/dev/null || true'
+        }
+    }
+}

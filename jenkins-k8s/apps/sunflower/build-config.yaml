@@ -1,0 +1,35 @@
+## Sunflower — Android Gradle build config
+## Used by jenkins-k8s/generic/android/Jenkinsfile
+
+app:
+  name: Sunflower
+  repo_url: file:///home/dk/Documents/git/sunflower
+  branch: main
+
+agent:
+  label: android-agent
+
+build:
+  type: gradle
+  android_home: /opt/android-sdk
+  tasks:
+    debug: assembleDebug
+    release: assembleRelease
+  # release_apk_pattern: app/build/outputs/apk/release/*.apk
+
+sast:
+  lint: true
+  spotbugs: true
+  semgrep: true
+  dependency_check: true
+  dependency_check_fail_cvss: 9
+
+upload:
+  nexus:
+    enabled: false
+    credential_id: nexus-creds
+    url: http://nexus.utilities.svc.cluster.local:8081/repository/android-releases
+  jfrog:
+    enabled: false
+    credential_id: jfrog-creds
+    url: http://100.89.50.27:30082/artifactory/example-repo-local

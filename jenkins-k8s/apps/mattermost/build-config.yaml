@@ -1,0 +1,41 @@
+## Mattermost Mobile — iOS React Native build config
+## Used by jenkins-k8s/generic/ios/Jenkinsfile
+
+app:
+  name: Mattermost
+  repo_url: https://github.com/mattermost/mattermost-mobile.git
+  branch: main
+
+agent:
+  label: ios-agent
+
+build:
+  type: react-native          # swift | react-native | fastlane
+  scheme: Mattermost
+  workspace: ios/Mattermost.xcworkspace
+  configuration: Release
+  simulator: "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest"
+
+signing:
+  mode: skip                  # skip | real
+  # For real mode, fill in credential IDs below:
+  # cert_credential_id: ios-dist-p12
+  # cert_password_credential_id: ios-dist-p12-pass
+  # profile_credential_id: ios-dist-profile
+  # team_id: ABCD1234EF
+  # export_method: enterprise  # development | ad-hoc | enterprise | app-store
+
+sast:
+  swiftlint: true
+  semgrep: true
+  eslint: true                # react-native only
+
+upload:
+  nexus:
+    enabled: false
+    credential_id: nexus-creds
+    url: http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases
+  jfrog:
+    enabled: false
+    credential_id: jfrog-creds
+    url: http://100.89.50.27:30082/artifactory/example-repo-local
