@@ -59,13 +59,26 @@ pipeline {
             }
         }
         stage('JS Dependencies') {
-            steps { sh 'source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e; npm ci --prefer-offline || echo "SKIP: npm not in PATH — install node via nvm for root"' }
+            steps {
+                sh '''#!/bin/bash
+                    set +e
+                    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                    npm ci --prefer-offline || echo "SKIP: npm not available ($(npm --version 2>&1 || echo not found))"
+                '''
+            }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
         }
         stage('iOS Native Dependencies') {
-            steps { sh 'source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; set +e; export LANG=en_US.UTF-8; cd ios && pod install --repo-update || echo "SKIP: pod not in PATH or no ios/ dir"' }
+            steps {
+                sh '''#!/bin/bash
+                    set +e
+                    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+                    export LANG=en_US.UTF-8
+                    [ -f ios/Podfile ] && pod install --repo-update || echo "SKIP: pod not available or no ios/Podfile"
+                '''
+            }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }

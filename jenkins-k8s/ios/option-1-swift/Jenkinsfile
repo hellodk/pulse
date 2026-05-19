@@ -61,7 +61,18 @@ pipeline {
         }
 
         stage('Resolve Dependencies') {
-            steps { sh "xcodebuild -resolvePackageDependencies -project ${PROJECT_FILE} -scheme '${SCHEME}'" }
+            steps {
+                sh '''#!/bin/bash
+                    set +e
+                    echo "Workspace contents:"
+                    ls -la
+                    echo "---"
+                    xcodebuild -resolvePackageDependencies \
+                        -project RetroRampage.xcodeproj \
+                        -scheme  RetroRampage \
+                        -clonedSourcePackagesDirPath .spm-cache || true
+                '''
+            }
             post {
                 failure { script { env.FAILED_STAGE = env.STAGE_NAME } }
             }
