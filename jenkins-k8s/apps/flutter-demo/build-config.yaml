@@ -3,7 +3,7 @@
 
 app:
   name: FlutterDemo
-  repo_url: https://github.com/flutter/gallery.git
+  repo_url: https://github.com/flutter/samples.git
   branch: main
 
 build:
