@@ -43,7 +43,7 @@ fi
 echo "[readConfig] size=\$(wc -c < \\$CFG_PATH 2>/dev/null || echo 0) bytes"
 curl -sf --max-time 15 "\\$PARSER" 2>/dev/null | python3 - "\\$CFG_PATH" > "\\$DEST" 2>/dev/null   || { echo "[readConfig] parse failed"; echo '{}' > "\\$DEST"; }
 
-[ -n "\\${TMPFILE:-}" ] && rm -f "\\$TMPFILE"
+[ -n "\${TMPFILE:-}" ] && rm -f "\\$TMPFILE"
 echo "[readConfig] result: \$(cat \\$DEST | head -c 120)"
 """
     def json = fileExists(cfgJson) ? readFile(cfgJson).trim() : '{}'
