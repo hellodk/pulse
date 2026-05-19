@@ -36,9 +36,14 @@ def parse_yaml(path: str) -> dict:
 
         key, _, val = stripped.partition(':')
         key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        # Strip inline YAML comments (e.g.  value  # comment → value)
-        if val and not val.startswith('"') and not val.startswith("'"):
+        val = val.strip()
+        if val.startswith('"') or val.startswith("'"):
+            # Quoted value: extract content between matching quotes; ignore trailing comment
+            q = val[0]
+            end = val.find(q, 1)
+            val = val[1:end] if end > 0 else val.strip(q)
+        else:
+            # Unquoted value: strip inline comment (2+ spaces then #) then trim
             val = val.split('  #')[0].split('\t#')[0].rstrip()
 
         # Pop stack back to the right nesting level
