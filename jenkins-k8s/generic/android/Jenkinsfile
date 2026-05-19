@@ -80,6 +80,26 @@ pipeline {
                     env.JFROG_CRED_ID     = cfgStr(cfg, 'upload', 'jfrog', 'credential_id')
                     env.JFROG_URL_VAL     = cfgStr(cfg, 'upload', 'jfrog', 'url')
 
+                    // Version
+                    env.VERSION_BASE   = cfgStr(cfg, 'version', 'base') ?: '1.0'
+                    // Rasping
+                    env.RASPING_ENABLED   = cfgBool(cfg, 'distribution', 'rasping', 'enabled').toString()
+                    env.RASPING_ENDPOINT  = cfgStr(cfg, 'distribution', 'rasping', 'endpoint')
+                    env.RASPING_KEY_ID    = cfgStr(cfg, 'distribution', 'rasping', 'api_key_credential_id')
+                    env.RASPING_GROUP     = cfgStr(cfg, 'distribution', 'rasping', 'target_group')
+                    env.RASPING_NOTES     = cfgStr(cfg, 'distribution', 'rasping', 'release_notes')
+                    // HeadSpin
+                    env.HEADSPIN_ENABLED    = cfgBool(cfg, 'distribution', 'headspin', 'enabled').toString()
+                    env.HEADSPIN_TOKEN_ID   = cfgStr(cfg, 'distribution', 'headspin', 'api_token_credential_id')
+                    env.HEADSPIN_PROJECT_ID = cfgStr(cfg, 'distribution', 'headspin', 'project_id')
+                    env.HEADSPIN_DEVICE_ID  = cfgStr(cfg, 'distribution', 'headspin', 'device_id')
+                    // Firebase
+                    env.FIREBASE_ENABLED = cfgBool(cfg, 'distribution', 'firebase', 'enabled').toString()
+                    env.FIREBASE_APP_ID  = cfgStr(cfg, 'distribution', 'firebase', 'app_id')
+                    env.FIREBASE_CRED_ID = cfgStr(cfg, 'distribution', 'firebase', 'credential_id')
+                    env.FIREBASE_GROUPS  = cfgStr(cfg, 'distribution', 'firebase', 'groups')
+                    env.FIREBASE_NOTES   = cfgStr(cfg, 'distribution', 'firebase', 'release_notes')
+
                     echo """
 ╔═══════════════════════════════════════════════╗
 ║  Android Generic Build — Config Loaded       ║
@@ -106,6 +126,59 @@ pipeline {
                         env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'",
                                                 returnStdout: true).trim()
                         env.APK_FILENAME   = "${env.APP_NAME}-${env.VERSION_NAME}-${env.BUILD_NUMBER}.apk"
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Version Update ──────────────────────────────────── */
+        stage('Version Update') {
+            steps {
+                dir('app-src') {
+                    script {
+                        def versionFull = "${env.VERSION_BASE}.${env.BUILD_NUMBER}"
+                        env.APP_VERSION = versionFull
+                        sh """#!/bin/bash
+set +e
+echo "=== Version Update: ${versionFull} (build ${env.BUILD_NUMBER}) ==="
+
+# ── app/build.gradle ──────────────────────────────────────────────────────────
+if [ -f app/build.gradle ]; then
+    python3 << 'PYEOF'
+import re, os
+path = 'app/build.gradle'
+with open(path) as f:
+    content = f.read()
+build_num = os.environ.get('BUILD_NUMBER','1')
+version_full = os.environ.get('VERSION_BASE','1.0') + '.' + build_num
+content = re.sub(r'versionCode\\s+\\d+', f'versionCode {build_num}', content)
+content = re.sub(r'versionName\\s+"[^"]*"', f'versionName "{version_full}"', content)
+with open(path,'w') as f:
+    f.write(content)
+print(f'  ✓ build.gradle: versionCode={build_num}, versionName={version_full}')
+PYEOF
+fi
+
+# ── build.gradle.kts ─────────────────────────────────────────────────────────
+if [ -f app/build.gradle.kts ]; then
+    python3 << 'PYEOF'
+import re, os
+path = 'app/build.gradle.kts'
+with open(path) as f:
+    content = f.read()
+build_num = os.environ.get('BUILD_NUMBER','1')
+version_full = os.environ.get('VERSION_BASE','1.0') + '.' + build_num
+content = re.sub(r'versionCode\\s*=\\s*\\d+', f'versionCode = {build_num}', content)
+content = re.sub(r'versionName\\s*=\\s*"[^"]*"', f'versionName = "{version_full}"', content)
+with open(path,'w') as f:
+    f.write(content)
+print(f'  ✓ build.gradle.kts: versionCode={build_num}, versionName={version_full}')
+PYEOF
+fi
+
+echo "=== Done ==="
+"""
                     }
                 }
             }
@@ -263,6 +336,132 @@ pipeline {
                 }
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Rasping Distribution ────────────────────────────── */
+        stage('Rasping') {
+            when { expression { env.RASPING_ENABLED == 'true' } }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    dir('app-src') {
+                        withCredentials([string(credentialsId: env.RASPING_KEY_ID, variable: 'RASPING_TOKEN')]) {
+                            sh '''#!/bin/bash
+set -euo pipefail
+ARTIFACT=$(find app/build/outputs -name "*.apk" | head -1)
+[ -z "$ARTIFACT" ] && { echo "No APK for Rasping — skipping"; exit 0; }
+NOTES=$(echo "${RASPING_NOTES}" \
+    | sed "s/\\${BUILD_NUMBER}/${BUILD_NUMBER}/g" \
+    | sed "s/\\${APP_VERSION}/${APP_VERSION}/g" \
+    | sed "s/\\${APP_NAME}/${APP_NAME}/g")
+echo "Uploading to Rasping: $ARTIFACT"
+# ─── STUB: adjust endpoint / field names to match your internal Rasping API ───
+curl -sf \
+    -X POST \
+    -H "Authorization: Bearer ${RASPING_TOKEN}" \
+    -H "X-Build-Number: ${BUILD_NUMBER}" \
+    -H "X-App-Version: ${APP_VERSION}" \
+    -H "X-App-Name: ${APP_NAME}" \
+    -F "file=@${ARTIFACT}" \
+    -F "release_notes=${NOTES}" \
+    -F "target_group=${RASPING_GROUP}" \
+    -F "app_name=${APP_NAME}" \
+    "${RASPING_ENDPOINT}" \
+    --max-time 120 \
+    -o rasping-response.json \
+  && echo "Rasping upload succeeded:" && cat rasping-response.json \
+  || { echo "Rasping upload failed"; exit 1; }
+# ─────────────────────────────────────────────────────────────────────────────
+'''
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ── HeadSpin Upload + Test ──────────────────────────── */
+        stage('HeadSpin') {
+            when { expression { env.HEADSPIN_ENABLED == 'true' } }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    dir('app-src') {
+                        withCredentials([string(credentialsId: env.HEADSPIN_TOKEN_ID, variable: 'HS_TOKEN')]) {
+                            sh '''#!/bin/bash
+set -euo pipefail
+ARTIFACT=$(find app/build/outputs -name "*.apk" | head -1)
+[ -z "$ARTIFACT" ] && { echo "No APK for HeadSpin — skipping"; exit 0; }
+echo "=== HeadSpin: uploading $ARTIFACT ==="
+UPLOAD_RESP=$(curl -sf \
+    -X POST \
+    "https://api-dev.headspin.io/v0/apps/uploadUrl" \
+    -H "Authorization: Bearer ${HS_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"platform": "android"}' \
+    --max-time 30) || { echo "HeadSpin: failed to get upload URL"; exit 1; }
+UPLOAD_URL=$(echo "$UPLOAD_RESP" | python3 -c \
+    "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null)
+APP_ID=$(echo "$UPLOAD_RESP" | python3 -c \
+    "import sys,json; print(json.load(sys.stdin).get('app_id',''))" 2>/dev/null)
+[ -z "$UPLOAD_URL" ] && { echo "Empty upload_url: $UPLOAD_RESP"; exit 1; }
+curl -sf -X PUT "$UPLOAD_URL" --upload-file "$ARTIFACT" --max-time 300 \
+  && echo "  ✓ Uploaded app_id=$APP_ID" || { echo "Upload failed"; exit 1; }
+echo "$APP_ID" > headspin-app-id.txt
+if [ -n "${HEADSPIN_DEVICE_ID}" ] && [ -n "$APP_ID" ]; then
+    SESSION_RESP=$(curl -sf \
+        -X POST "https://api-dev.headspin.io/v0/sessions/start" \
+        -H "Authorization: Bearer ${HS_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "{\"app_id\":\"$APP_ID\",\"device_id\":\"${HEADSPIN_DEVICE_ID}\",\"project_id\":\"${HEADSPIN_PROJECT_ID}\"}" \
+        --max-time 60) || { echo "Session start failed (non-fatal)"; exit 0; }
+    SESSION_ID=$(echo "$SESSION_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+    echo "  ✓ Session: $SESSION_ID"
+fi
+'''
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ── Firebase App Distribution + Crashlytics ─────────── */
+        stage('Firebase') {
+            when { expression { env.FIREBASE_ENABLED == 'true' } }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    dir('app-src') {
+                        withCredentials([file(credentialsId: env.FIREBASE_CRED_ID,
+                                              variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                            sh '''#!/bin/bash
+set -euo pipefail
+ARTIFACT=$(find app/build/outputs -name "*.apk" | head -1)
+[ -z "$ARTIFACT" ] && { echo "No APK for Firebase — skipping"; exit 0; }
+NOTES=$(echo "${FIREBASE_NOTES}" \
+    | sed "s/\\${BUILD_NUMBER}/${BUILD_NUMBER}/g" \
+    | sed "s/\\${APP_VERSION}/${APP_VERSION}/g" \
+    | sed "s/\\${APP_NAME}/${APP_NAME}/g")
+export GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS}"
+echo "=== Firebase App Distribution: $ARTIFACT ==="
+firebase appdistribution:distribute "$ARTIFACT" \
+    --app "${FIREBASE_APP_ID}" \
+    --groups "${FIREBASE_GROUPS}" \
+    --release-notes "$NOTES" \
+    --non-interactive \
+  && echo "  ✓ Firebase App Distribution complete" \
+  || { echo "Firebase distribution failed — check firebase-cli and credentials"; exit 1; }
+# Android mapping.txt upload for Crashlytics (deobfuscation)
+MAPPING=$(find app/build/outputs -name "mapping.txt" | head -1)
+if [ -n "$MAPPING" ]; then
+    firebase crashlytics:symbols:upload \
+        --app "${FIREBASE_APP_ID}" \
+        "$MAPPING" \
+        --non-interactive 2>/dev/null \
+      && echo "  ✓ Crashlytics mapping.txt uploaded" \
+      || echo "  mapping.txt upload failed (non-fatal)"
+fi
+'''
+                        }
+                    }
+                }
+            }
         }
 
         stage('Archive Reports') {
