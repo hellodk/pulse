@@ -161,6 +161,7 @@ pipeline {
                     env.SIGN_PASS_ID  = cfgStr(cfg, 'signing', 'cert_password_credential_id')
                     env.SIGN_PROF_ID  = cfgStr(cfg, 'signing', 'profile_credential_id')
                     env.SIGN_TEAM     = cfgStr(cfg, 'signing', 'team_id')
+                    env.BUNDLE_ID     = cfgStr(cfg, 'signing', 'bundle_id')
                     env.EXPORT_METHOD = cfgStr(cfg, 'signing', 'export_method') ?: 'development'
                     env.SAST_SWIFTLINT = cfgBool(cfg, 'sast', 'swiftlint').toString()
                     env.SAST_SEMGREP   = cfgBool(cfg, 'sast', 'semgrep').toString()
@@ -269,21 +270,40 @@ pipeline {
                             set -euo pipefail
                             KEYCHAIN_NAME="jenkins-ios-${BUILD_NUMBER}.keychain-db"
                             KEYCHAIN_PASS="jenkins-${BUILD_NUMBER}"
-                            echo "${KEYCHAIN_NAME}" > /tmp/ios_keychain_${BUILD_NUMBER}.txt
-                            echo "${KEYCHAIN_PASS}" >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
 
+                            # Create isolated per-build keychain
                             security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
                             security set-keychain-settings -lut 7200 "${KEYCHAIN_NAME}"
                             security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+
+                            # Import P12 — grant access to codesign + xcodebuild without GUI prompts
                             security import "${P12_FILE}" \
-                                -k "${KEYCHAIN_NAME}" -P "${P12_PASS}" \
-                                -T /usr/bin/codesign -T /usr/bin/xcodebuild -T /usr/bin/security
+                                -k "${KEYCHAIN_NAME}" \
+                                -P "${P12_PASS}" \
+                                -T /usr/bin/codesign \
+                                -T /usr/bin/xcodebuild \
+                                -T /usr/bin/security
+
+                            # set-key-partition-list: REQUIRED on macOS Tahoe (Xcode 26)
+                            # Without this, codesign prompts for keychain password even in headless mode.
+                            # Partition list covers all Apple signing tools.
                             security set-key-partition-list \
                                 -S apple-tool:,apple:,codesign:,productsign: \
-                                -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}"
+                                -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_NAME}" 2>/dev/null
+
+                            # Prepend to keychain search list so it is found before login.keychain
                             CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
                             security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT}
+
+                            # Read the actual identity CN from the keychain so xcodebuild gets the
+                            # exact string — required for CODE_SIGN_IDENTITY on Xcode 26 manual signing.
+                            IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
+                                | grep '"' | head -1 | sed 's/.*"\\(.*\\)"/\\1/')
+                            echo "${KEYCHAIN_NAME}" >  /tmp/ios_keychain_${BUILD_NUMBER}.txt
+                            echo "${KEYCHAIN_PASS}"  >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
+                            echo "${IDENTITY}"        >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
                             echo "Keychain ready: ${KEYCHAIN_NAME}"
+                            echo "Signing identity: ${IDENTITY}"
                         '''
                     }
                     if (env.SIGN_PROF_ID) {
@@ -316,9 +336,21 @@ pipeline {
                             def keychainLines = readFile("/tmp/ios_keychain_${BUILD_NUMBER}.txt").trim().split('\n')
                             def keychainName  = keychainLines[0]
                             def keychainPass  = keychainLines[1]
+                            def identity      = keychainLines.size() > 2 ? keychainLines[2] : ''
+                            // Xcode 26 / macOS Tahoe requirements:
+                            // 1. CODE_SIGN_IDENTITY must be the exact string from the keychain
+                            // 2. PROVISIONING_PROFILE_SPECIFIER selects which profile to use (manual signing)
+                            // 3. --timestamp=none prevents xcodebuild calling Apple timestamp servers in CI
+                            //    (avoids hangs when signing keys are not from Apple's CA)
+                            // 4. --keychain must be the full path (Tahoe changed resolution order)
+                            def keychainPath = sh(script: "security find-keychain '${keychainName}' | tr -d '\\\"'",
+                                                   returnStdout: true).trim() ?: keychainName
                             signFlags = """DEVELOPMENT_TEAM="${env.SIGN_TEAM}" \\
                                 CODE_SIGN_STYLE=Manual \\
-                                OTHER_CODE_SIGN_FLAGS="--keychain ${keychainName}" """
+                                CODE_SIGN_IDENTITY="${identity}" \\
+                                PROVISIONING_PROFILE_SPECIFIER="${env.SIGN_PROF_ID ?: ''}" \\
+                                PRODUCT_BUNDLE_IDENTIFIER="${env.BUNDLE_ID ?: ''}" \\
+                                OTHER_CODE_SIGN_FLAGS="--keychain '${keychainPath}' --timestamp=none" """
                         }
 
                         if (env.BUILD_TYPE == 'react-native') {

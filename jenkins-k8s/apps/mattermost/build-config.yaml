@@ -23,6 +23,7 @@ signing:
   # cert_password_credential_id: ios-dist-p12-pass
   # profile_credential_id: ios-dist-profile
   # team_id: ABCD1234EF
+  # bundle_id: com.mattermost.rnbeta       # must match the provisioning profile
   # export_method: enterprise  # development | ad-hoc | enterprise | app-store
 
 sast:
