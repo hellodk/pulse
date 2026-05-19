@@ -18,7 +18,7 @@ def readConfig(cfgPath) {
     def cfgJson = "${WORKSPACE}/.cfg_${BUILD_NUMBER}.json"
     sh label: 'Read build config', script: """#!/bin/bash
 set +e
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\\${PATH:-}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 ABS="/home/dk/Documents/git/pulse/${cfgPath}"
 UC="http://100.89.50.27:30881/userContent/shared/${cfgPath}"
 PARSER="http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/parse-config.py"
