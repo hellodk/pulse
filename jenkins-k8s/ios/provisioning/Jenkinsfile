@@ -251,7 +251,7 @@ pipeline {
                     sh '''
                         cp "$PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
                         unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
-                        find "$EXTRACT_DIR" -name "*.mobileprovision" -exec cp {} "$PROFILE_DIR/" \;
+                        find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
                         COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
                         echo "Extracted $COUNT provisioning profile(s) from ZIP"
                         if [ "$COUNT" -eq 0 ]; then
