@@ -190,9 +190,10 @@ pipeline {
     }
 
     parameters {
-        file(
-            name: 'PROFILES_ZIP',
-            description: 'ZIP file containing one or more .mobileprovision files'
+        string(
+            name: 'PROFILES_ZIP_PATH',
+            defaultValue: '/tmp/profiles.zip',
+            description: 'Full path to the ZIP file on the Mac Mini containing .mobileprovision files (scp it there first)'
         )
         string(
             name: 'NOTIFY_EMAIL',
@@ -247,9 +248,11 @@ pipeline {
         stage('Extract ZIP') {
             steps {
                 sh '''
-                    # file parameter: $PROFILES_ZIP holds the original filename; file is at $WORKSPACE/$PROFILES_ZIP
-                    ZIPFILE=$(find "$WORKSPACE" -maxdepth 1 -name "*.zip" | head -1)
-                    [ -z "$ZIPFILE" ] && ZIPFILE="$WORKSPACE/$PROFILES_ZIP"
+                    ZIPFILE="${PROFILES_ZIP_PATH:-/tmp/profiles.zip}"
+                    if [ ! -f "$ZIPFILE" ]; then
+                        echo "ERROR: ZIP not found at $ZIPFILE — scp the file to the Mac Mini first"
+                        exit 1
+                    fi
                     cp "$ZIPFILE" "$EXTRACT_DIR/upload.zip"
                     unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
                     find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
