@@ -222,24 +222,23 @@ pipeline {
         REPORT_DIR   = "${WORKSPACE}/reports"
         BACKUP_DIR   = "${WORKSPACE}/backups"
         INSTALL_DIR  = "${HOME}/Library/MobileDevice/Provisioning Profiles"
-        SCRIPTS_DIR  = "${WORKSPACE}/jenkins-k8s/ios/provisioning/scripts"
+        SCRIPTS_DIR  = "${WORKSPACE}/scripts"
     }
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                git url: 'http://100.89.50.27:30300/dk/pulse', branch: 'master'
-            }
-            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
-        }
-
         stage('Prepare') {
             steps {
                 sh '''
-                    rm -rf "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
-                    mkdir -p "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
-                    chmod +x "$SCRIPTS_DIR/"*.sh "$SCRIPTS_DIR/"*.py 2>/dev/null || true
+                    set -e
+                    rm -rf "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR" "$SCRIPTS_DIR"
+                    mkdir -p "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR" "$SCRIPTS_DIR"
+                    UC="http://100.89.50.27:30881/userContent/shared/jenkins-k8s/ios/provisioning/scripts"
+                    for SCRIPT in parse_profiles.py install_profiles.sh validate_profiles.sh; do
+                        curl -sf --max-time 15 "$UC/$SCRIPT" -o "$SCRIPTS_DIR/$SCRIPT"
+                        echo "Fetched $SCRIPT"
+                    done
+                    chmod +x "$SCRIPTS_DIR/"*.sh "$SCRIPTS_DIR/"*.py
                 '''
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
