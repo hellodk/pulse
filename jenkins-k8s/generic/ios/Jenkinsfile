@@ -521,11 +521,16 @@ echo "=== Done ==="
                                 set +e
                                 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
                                 mkdir -p reports
-                                # Use explicit path so jest runs even if PATH is minimal
-                                JEST_BIN=$([ -f node_modules/.bin/jest ] && echo node_modules/.bin/jest || echo npx jest)
-                                $JEST_BIN --ci \
-                                    --reporters=default --reporters=jest-junit \
-                                    --outputFile=reports/jest-results.xml 2>&1 || true
+                                JEST_BIN="node_modules/.bin/jest"
+                                if [ -f "$JEST_BIN" ]; then
+                                    # Install jest-junit reporter if not already present
+                                    [ -d node_modules/jest-junit ] || npm install --no-save jest-junit 2>/dev/null || true
+                                    $JEST_BIN --ci \
+                                        --reporters=default --reporters=jest-junit \
+                                        --outputFile=reports/jest-results.xml 2>&1 || true
+                                else
+                                    echo "SKIP: jest not available (node_modules not installed)"
+                                fi
                             '''
                             junit allowEmptyResults: true, testResults: 'reports/jest-results.xml'
                         }
