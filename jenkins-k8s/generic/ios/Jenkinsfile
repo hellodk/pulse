@@ -527,26 +527,13 @@ echo "=== Done ==="
                                     $JEST_BIN --ci --json \
                                         --outputFile=reports/jest-results.json 2>/dev/null || true
                                     # Convert jest JSON → JUnit XML for Jenkins Test Result Trend
-                                    [ -f reports/jest-results.json ] && python3 - <<'PYEOF'
-import json, xml.etree.ElementTree as ET
-try:
-    with open('reports/jest-results.json') as f: data = json.load(f)
-    root = ET.Element('testsuites')
-    for suite in data.get('testResults', []):
-        name = suite.get('testFilePath','').split('/')[-1]
-        ts = ET.SubElement(root, 'testsuite', name=name,
-                           tests=str(len(suite.get('testResults',[]))))
-        for t in suite.get('testResults', []):
-            title = ' > '.join(t.get('ancestorTitles',[])+[t.get('title','')])
-            tc = ET.SubElement(ts, 'testcase', name=title, classname=name,
-                               time=str(round(t.get('duration',0)/1000.0,3)))
-            if t.get('status') == 'failed':
-                msg = '\n'.join(t.get('failureMessages',[])).replace('&','&amp;').replace('<','&lt;')[:500]
-                ET.SubElement(tc, 'failure').text = msg
-    ET.ElementTree(root).write('reports/jest-results.xml', xml_declaration=True, encoding='utf-8')
-    print(f"JUnit XML: {len(data.get('testResults',[]))} suites")
-except Exception as e: print(f"Conversion skipped: {e}")
-PYEOF
+                                    if [ -f reports/jest-results.json ]; then
+                                        [ -f /tmp/jest2junit.py ] \
+                                          || curl -sf "http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/jest2junit.py" \
+                                                  -o /tmp/jest2junit.py 2>/dev/null || true
+                                        python3 /tmp/jest2junit.py \
+                                            reports/jest-results.json reports/jest-results.xml 2>&1 || true
+                                    fi
                                 else
                                     echo "SKIP: jest not available (node_modules not installed)"
                                 fi
