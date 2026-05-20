@@ -339,6 +339,7 @@ echo "=== Done ==="
                         export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
                         npm ci --prefer-offline --legacy-peer-deps \
                           || npm install --legacy-peer-deps \
+                          || npm install --force \
                           || echo "WARN: npm install failed — JS tests may be skipped"
                     '''
                 }
@@ -632,8 +633,10 @@ echo "=== Done ==="
                         enabledForFailure: true,
                         qualityGates: [],
                         tools: [
-                            checkStyle(pattern: 'app-src/reports/swiftlint-checkstyle.xml', name: 'SwiftLint'),
-                            checkStyle(pattern: 'app-src/reports/eslint-checkstyle.xml',    name: 'ESLint'),
+                            checkStyle(id: 'swiftlint', name: 'SwiftLint',
+                                       pattern: 'app-src/reports/swiftlint-checkstyle.xml'),
+                            checkStyle(id: 'eslint',    name: 'ESLint',
+                                       pattern: 'app-src/reports/eslint-checkstyle.xml'),
                         ]
                     )
                 }
