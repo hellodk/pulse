@@ -190,7 +190,7 @@ pipeline {
     }
 
     parameters {
-        base64File(
+        file(
             name: 'PROFILES_ZIP',
             description: 'ZIP file containing one or more .mobileprovision files'
         )
@@ -247,19 +247,17 @@ pipeline {
 
         stage('Extract ZIP') {
             steps {
-                withFileParameter('PROFILES_ZIP') {
-                    sh '''
-                        cp "$PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
-                        unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
-                        find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
-                        COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
-                        echo "Extracted $COUNT provisioning profile(s) from ZIP"
-                        if [ "$COUNT" -eq 0 ]; then
-                            echo "ERROR: No .mobileprovision files found in the uploaded ZIP."
-                            exit 1
-                        fi
-                    '''
-                }
+                sh '''
+                    cp "$WORKSPACE/PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
+                    unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
+                    find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
+                    COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
+                    echo "Extracted $COUNT provisioning profile(s) from ZIP"
+                    if [ "$COUNT" -eq 0 ]; then
+                        echo "ERROR: No .mobileprovision files found in the uploaded ZIP."
+                        exit 1
+                    fi
+                '''
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
         }
