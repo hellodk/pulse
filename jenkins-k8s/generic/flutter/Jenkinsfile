@@ -65,8 +65,8 @@ def cfgBool(cfg, String... keys) {
 
 pipeline {
 
-    // Top-level agent: reads config on any available agent
-    agent any
+    // Top-level agent: needs python3 for readConfig (Jenkins controller pod lacks it)
+    agent { label 'android-agent || cylon-agent || ios-agent' }
 
     options {
         skipDefaultCheckout(true)
