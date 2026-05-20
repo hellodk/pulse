@@ -337,7 +337,9 @@ echo "=== Done ==="
                     sh '''#!/bin/bash
                         set +e
                         export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-                        npm ci --prefer-offline || echo "SKIP: npm ci failed — check Node version"
+                        npm ci --prefer-offline --legacy-peer-deps \
+                          || npm install --legacy-peer-deps \
+                          || echo "WARN: npm install failed — JS tests may be skipped"
                     '''
                 }
             }
@@ -518,8 +520,11 @@ echo "=== Done ==="
                                 set +e
                                 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
                                 mkdir -p reports
-                                npm test -- --ci --reporters=jest-junit \
-                                    --outputFile=reports/jest-results.xml || true
+                                # Use explicit path so jest runs even if PATH is minimal
+                                JEST_BIN=$([ -f node_modules/.bin/jest ] && echo node_modules/.bin/jest || echo npx jest)
+                                $JEST_BIN --ci \
+                                    --reporters=default --reporters=jest-junit \
+                                    --outputFile=reports/jest-results.xml 2>&1 || true
                             '''
                             junit allowEmptyResults: true, testResults: 'reports/jest-results.xml'
                         }
@@ -541,12 +546,18 @@ echo "=== Done ==="
                                     [ -n "$PROJECT" ] && TARGET_FLAG="-project $PROJECT" || { echo "SKIP: no project"; exit 0; }
                                 fi
                                 SCHEME_AUTO=${SCHEME:-$(basename "${PROJECT:-x}" .xcodeproj)}
+                                # Boot simulator if runtime available; xcodebuild will auto-create one
+                                xcrun simctl list runtimes 2>/dev/null | grep -q "iOS" \
+                                    && xcrun simctl create "CI-iPhone" \
+                                           com.apple.CoreSimulator.SimDeviceType.iPhone-16 \
+                                           $(xcrun simctl list runtimes 2>/dev/null | grep "iOS" | awk '{print $NF}' | tail -1) \
+                                       2>/dev/null || true
                                 xcodebuild test \
                                     $TARGET_FLAG \
                                     -scheme "$SCHEME_AUTO" \
                                     -destination "${SIMULATOR}" \
                                     -resultBundlePath build/TestResults.xcresult \
-                                    2>&1 | tail -20 || true
+                                    2>&1 | tail -30 || true
                                 # Convert xcresult → JUnit XML for Jenkins trend graph
                                 if [ -d "build/TestResults.xcresult" ]; then
                                     xcrun xcresulttool get test-results junit \
