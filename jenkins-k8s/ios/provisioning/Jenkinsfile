@@ -248,9 +248,10 @@ pipeline {
         stage('Extract ZIP') {
             steps {
                 sh '''
-                    echo "Downloading profiles ZIP from ${PROFILES_ZIP_URL}"
-                    curl -sf --max-time 60 "${PROFILES_ZIP_URL}" -o "$EXTRACT_DIR/upload.zip" \
-                      || { echo "ERROR: failed to download from ${PROFILES_ZIP_URL}"; exit 1; }
+                    ZIP_URL="${PROFILES_ZIP_URL:-http://100.89.50.27:30881/userContent/uploads/profiles.zip}"
+                    echo "Downloading profiles ZIP from ${ZIP_URL}"
+                    curl -sf --max-time 60 "${ZIP_URL}" -o "$EXTRACT_DIR/upload.zip" \
+                      || { echo "ERROR: failed to download from ${ZIP_URL}"; exit 1; }
                     echo "Downloaded $(wc -c < $EXTRACT_DIR/upload.zip) bytes"
                     unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
                     find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
