@@ -191,9 +191,9 @@ pipeline {
 
     parameters {
         string(
-            name: 'PROFILES_ZIP_PATH',
-            defaultValue: '/Users/dk/jenkins-agent/profiles.zip',
-            description: 'Full path to the ZIP file on the Mac Mini. Place it at /Users/dk/jenkins-agent/profiles.zip before triggering.'
+            name: 'PROFILES_ZIP_URL',
+            defaultValue: 'http://100.89.50.27:30881/userContent/uploads/profiles.zip',
+            description: 'URL to download the ZIP containing .mobileprovision files. Upload ZIP to Jenkins userContent/uploads/ first.'
         )
         string(
             name: 'NOTIFY_EMAIL',
@@ -248,12 +248,10 @@ pipeline {
         stage('Extract ZIP') {
             steps {
                 sh '''
-                    ZIPFILE="${PROFILES_ZIP_PATH:-/tmp/profiles.zip}"
-                    if [ ! -f "$ZIPFILE" ]; then
-                        echo "ERROR: ZIP not found at $ZIPFILE — scp the file to the Mac Mini first"
-                        exit 1
-                    fi
-                    cp "$ZIPFILE" "$EXTRACT_DIR/upload.zip"
+                    echo "Downloading profiles ZIP from ${PROFILES_ZIP_URL}"
+                    curl -sf --max-time 60 "${PROFILES_ZIP_URL}" -o "$EXTRACT_DIR/upload.zip" \
+                      || { echo "ERROR: failed to download from ${PROFILES_ZIP_URL}"; exit 1; }
+                    echo "Downloaded $(wc -c < $EXTRACT_DIR/upload.zip) bytes"
                     unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
                     find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
                     COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
