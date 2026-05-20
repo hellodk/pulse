@@ -192,8 +192,8 @@ pipeline {
     parameters {
         string(
             name: 'PROFILES_ZIP_PATH',
-            defaultValue: '/Users/dk/profiles.zip',
-            description: 'Full path to the ZIP file on the Mac Mini containing .mobileprovision files (scp it there first)'
+            defaultValue: '/Users/dk/jenkins-agent/profiles.zip',
+            description: 'Full path to the ZIP file on the Mac Mini. Place it at /Users/dk/jenkins-agent/profiles.zip before triggering.'
         )
         string(
             name: 'NOTIFY_EMAIL',
