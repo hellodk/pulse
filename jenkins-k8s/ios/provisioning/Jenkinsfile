@@ -180,6 +180,7 @@ th{background:#f8f9fa;font-weight:600;color:#555;font-size:12px;}
 // ── Pipeline ───────────────────────────────────────────────────
 
 pipeline {
+    // Default agent: Mac Mini. Upload Profiles stage overrides to built-in (controller).
     agent { label 'ios-agent' }
 
     options {
@@ -190,10 +191,9 @@ pipeline {
     }
 
     parameters {
-        string(
-            name: 'PROFILES_ZIP_URL',
-            defaultValue: 'http://100.89.50.27:30881/userContent/uploads/profiles.zip',
-            description: 'URL to download the ZIP containing .mobileprovision files. Upload ZIP to Jenkins userContent/uploads/ first.'
+        file(
+            name: 'PROFILES_ZIP',
+            description: 'ZIP file containing one or more .mobileprovision files (uploaded via the Jenkins UI file picker)'
         )
         string(
             name: 'NOTIFY_EMAIL',
@@ -228,6 +228,28 @@ pipeline {
 
     stages {
 
+        /* ── Stage 1: runs on controller — saves uploaded ZIP to userContent ── */
+        stage('Upload Profiles') {
+            agent { label 'built-in' }
+            steps {
+                script {
+                    def zipPath = "${env.WORKSPACE}/PROFILES_ZIP"
+                    if (!fileExists(zipPath)) {
+                        // Try the parameter name directly
+                        zipPath = env.PROFILES_ZIP ?: ''
+                    }
+                    if (zipPath && fileExists(zipPath)) {
+                        sh "cp '${zipPath}' /var/jenkins_home/userContent/uploads/profiles.zip"
+                        echo "[Upload] Saved ${zipPath} to userContent/uploads/profiles.zip"
+                    } else {
+                        echo "[Upload] No file uploaded — will use existing userContent/uploads/profiles.zip"
+                    }
+                }
+            }
+            post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
+        }
+
+        /* ── Stage 2+: run on Mac Mini ios-agent ────────────────────────── */
         stage('Prepare') {
             steps {
                 sh '''
