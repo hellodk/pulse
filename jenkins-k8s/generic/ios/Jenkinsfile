@@ -547,6 +547,14 @@ echo "=== Done ==="
                                     -destination "${SIMULATOR}" \
                                     -resultBundlePath build/TestResults.xcresult \
                                     2>&1 | tail -20 || true
+                                # Convert xcresult → JUnit XML for Jenkins trend graph
+                                if [ -d "build/TestResults.xcresult" ]; then
+                                    xcrun xcresulttool get test-results junit \
+                                        --path build/TestResults.xcresult \
+                                        --output-path reports/xcode-test-results.xml 2>/dev/null \
+                                    || xcpretty --report junit --output reports/xcode-test-results.xml \
+                                            < /dev/null 2>/dev/null || true
+                                fi
                             '''
                             junit allowEmptyResults: true, testResults: 'reports/xcode-test-results.xml'
                         }
@@ -567,7 +575,7 @@ echo "=== Done ==="
                                 set +e
                                 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
                                 mkdir -p reports
-                                swiftlint lint --reporter html > reports/swiftlint.html 2>/dev/null \
+                                swiftlint lint --reporter checkstyle > reports/swiftlint-checkstyle.xml 2>/dev/null \
                                   || echo "swiftlint not available or found issues"
                             '''
                         }
@@ -582,6 +590,8 @@ echo "=== Done ==="
                                 set +e
                                 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
                                 mkdir -p reports
+                                npx eslint . --ext .js,.jsx,.ts,.tsx \
+                                    --format checkstyle --output-file reports/eslint-checkstyle.xml 2>/dev/null || true
                                 npx eslint . --ext .js,.jsx,.ts,.tsx \
                                     --format json --output-file reports/eslint.json 2>/dev/null || true
                             '''
@@ -603,6 +613,18 @@ echo "=== Done ==="
                             '''
                         }
                     }
+                }
+            }
+            post {
+                always {
+                    recordIssues(
+                        enabledForFailure: true,
+                        qualityGates: [],
+                        tools: [
+                            checkStyle(pattern: 'app-src/reports/swiftlint-checkstyle.xml', name: 'SwiftLint'),
+                            checkStyle(pattern: 'app-src/reports/eslint-checkstyle.xml',    name: 'ESLint'),
+                        ]
+                    )
                 }
             }
         }
