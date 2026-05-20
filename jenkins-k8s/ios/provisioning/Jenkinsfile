@@ -247,7 +247,10 @@ pipeline {
         stage('Extract ZIP') {
             steps {
                 sh '''
-                    cp "$WORKSPACE/PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
+                    # file parameter: $PROFILES_ZIP holds the original filename; file is at $WORKSPACE/$PROFILES_ZIP
+                    ZIPFILE=$(find "$WORKSPACE" -maxdepth 1 -name "*.zip" | head -1)
+                    [ -z "$ZIPFILE" ] && ZIPFILE="$WORKSPACE/$PROFILES_ZIP"
+                    cp "$ZIPFILE" "$EXTRACT_DIR/upload.zip"
                     unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
                     find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
                     COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
