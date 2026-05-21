@@ -21,9 +21,14 @@ from typing import Optional
 
 def decode_profile(path: str) -> bytes:
     result = subprocess.run(
-        ["security", "cms", "-D", "-i", path],
+        ["openssl", "smime", "-inform", "DER", "-verify", "-noverify", "-in", str(path)],
         capture_output=True,
     )
+    if result.returncode != 0:
+        result = subprocess.run(
+            ["security", "cms", "-D", "-i", str(path)],
+            capture_output=True,
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode(errors="replace").strip())
     return result.stdout
