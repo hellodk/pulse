@@ -16,6 +16,7 @@ import plistlib
 import subprocess
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 
 def decode_profile(path: str) -> bytes:
@@ -39,7 +40,7 @@ def distribution_type(plist: dict) -> str:
     return "AppStore"
 
 
-def days_left(expiry) -> int | None:
+def days_left(expiry) -> Optional[int]:
     if expiry is None:
         return None
     if not hasattr(expiry, "tzinfo") or expiry.tzinfo is None:

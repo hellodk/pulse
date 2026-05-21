@@ -222,7 +222,6 @@ pipeline {
         EXTRACT_DIR  = "${WORKSPACE}/extracted"
         REPORT_DIR   = "${WORKSPACE}/reports"
         BACKUP_DIR   = "${WORKSPACE}/backups"
-        INSTALL_DIR  = "${HOME}/Library/MobileDevice/Provisioning Profiles"
         SCRIPTS_DIR  = "${WORKSPACE}/scripts"
     }
 
@@ -293,7 +292,7 @@ pipeline {
                 sh '''
                     python3 "$SCRIPTS_DIR/parse_profiles.py" \
                         --profile-dir "$PROFILE_DIR" \
-                        --install-dir "$INSTALL_DIR" \
+                        --install-dir "$HOME/Library/MobileDevice/Provisioning Profiles" \
                         --output     "$REPORT_DIR/profiles.json"
                     echo "--- profiles.json ---"
                     cat "$REPORT_DIR/profiles.json"
@@ -355,7 +354,7 @@ pipeline {
                 sh '''
                     "$SCRIPTS_DIR/install_profiles.sh" \
                         "$PROFILE_DIR" \
-                        "$INSTALL_DIR" \
+                        "$HOME/Library/MobileDevice/Provisioning Profiles" \
                         "$BACKUP_DIR" \
                         "${REPLACE_EXISTING}"
                 '''
@@ -371,7 +370,7 @@ pipeline {
                         ${dryFlag}
                         "$SCRIPTS_DIR/validate_profiles.sh" \
                             "$PROFILE_DIR" \
-                            "$INSTALL_DIR" \
+                            "$HOME/Library/MobileDevice/Provisioning Profiles" \
                             "$REPORT_DIR/validation.json"
                     """
                 }
