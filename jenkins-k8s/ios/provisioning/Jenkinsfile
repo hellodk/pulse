@@ -411,44 +411,58 @@ pipeline {
 
         failure {
             script {
-                // Auto-rollback: restore any backups that were made before the failure
-                sh '''
-                    BACKUPS=$(find "$BACKUP_DIR" -name "*.mobileprovision.bak" 2>/dev/null | wc -l | tr -d ' ')
-                    if [ "$BACKUPS" -gt 0 ]; then
-                        echo "⏪ Rolling back $BACKUPS profile(s) from backup..."
-                        for bak in "$BACKUP_DIR"/*.mobileprovision.bak; do
-                            UUID=$(basename "$bak" .mobileprovision.bak)
-                            cp "$bak" "$INSTALL_DIR/$UUID.mobileprovision"
-                            echo "  Restored: $UUID"
-                        done
-                        echo "Rollback complete."
-                    else
-                        echo "No backups found — nothing to roll back."
-                    fi
-                '''
-
-                def profiles = []
                 try {
-                    profiles = new groovy.json.JsonSlurperClassic()
-                        .parseText(readFile("${REPORT_DIR}/profiles.json"))
-                } catch (ignored) {}
+                    node('ios-agent') {
+                        // Auto-rollback: restore any backups that were made before the failure
+                        sh '''
+                            BACKUPS=$(find "$BACKUP_DIR" -name "*.mobileprovision.bak" 2>/dev/null | wc -l | tr -d ' ')
+                            if [ "$BACKUPS" -gt 0 ]; then
+                                echo "⏪ Rolling back $BACKUPS profile(s) from backup..."
+                                for bak in "$BACKUP_DIR"/*.mobileprovision.bak; do
+                                    UUID=$(basename "$bak" .mobileprovision.bak)
+                                    cp "$bak" "$INSTALL_DIR/$UUID.mobileprovision"
+                                    echo "  Restored: $UUID"
+                                done
+                                echo "Rollback complete."
+                            else
+                                echo "No backups found — nothing to roll back."
+                            fi
+                        '''
 
-                def body = buildEmailBody(
-                    'FAILURE', profiles, [],
-                    params.DRY_RUN, params.REPLACE_EXISTING,
-                    currentBuild.durationString ?: 'N/A'
-                )
-                emailext(
-                    subject: "❌ iOS Provisioning FAILED — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    to: params.NOTIFY_EMAIL,
-                    mimeType: 'text/html',
-                    body: body
-                )
+                        def profiles = []
+                        try {
+                            profiles = new groovy.json.JsonSlurperClassic()
+                                .parseText(readFile("${REPORT_DIR}/profiles.json"))
+                        } catch (ignored) {}
+
+                        def body = buildEmailBody(
+                            'FAILURE', profiles, [],
+                            params.DRY_RUN, params.REPLACE_EXISTING,
+                            currentBuild.durationString ?: 'N/A'
+                        )
+                        emailext(
+                            subject: "❌ iOS Provisioning FAILED — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            to: params.NOTIFY_EMAIL,
+                            mimeType: 'text/html',
+                            body: body
+                        )
+                    }
+                } catch (e) {
+                    echo "WARNING: post-failure handler could not run (agent unavailable?): ${e.message}"
+                }
             }
         }
 
         cleanup {
-            sh 'rm -rf "$EXTRACT_DIR" || true'
+            script {
+                try {
+                    node('ios-agent') {
+                        sh 'rm -rf "$EXTRACT_DIR" || true'
+                    }
+                } catch (e) {
+                    echo "WARNING: cleanup could not run (agent unavailable?): ${e.message}"
+                }
+            }
         }
     }
 }
