@@ -290,9 +290,10 @@ pipeline {
         stage('Parse Profiles') {
             steps {
                 sh '''
+                    AGENT_HOME=$(python3 -c "import os; print(os.path.expanduser('~'))")
                     python3 "$SCRIPTS_DIR/parse_profiles.py" \
                         --profile-dir "$PROFILE_DIR" \
-                        --install-dir "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                        --install-dir "$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
                         --output     "$REPORT_DIR/profiles.json"
                     echo "--- profiles.json ---"
                     cat "$REPORT_DIR/profiles.json"
@@ -352,9 +353,10 @@ pipeline {
             when { expression { !params.DRY_RUN } }
             steps {
                 sh '''
+                    AGENT_HOME=$(python3 -c "import os; print(os.path.expanduser('~'))")
                     "$SCRIPTS_DIR/install_profiles.sh" \
                         "$PROFILE_DIR" \
-                        "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                        "$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
                         "$BACKUP_DIR" \
                         "${REPLACE_EXISTING}"
                 '''
@@ -368,10 +370,11 @@ pipeline {
                     def dryFlag = params.DRY_RUN ? 'DRY_RUN=true' : ''
                     sh """
                         ${dryFlag}
-                        "$SCRIPTS_DIR/validate_profiles.sh" \
-                            "$PROFILE_DIR" \
-                            "$HOME/Library/MobileDevice/Provisioning Profiles" \
-                            "$REPORT_DIR/validation.json"
+                        AGENT_HOME=\$(python3 -c "import os; print(os.path.expanduser('~'))")
+                        "\$SCRIPTS_DIR/validate_profiles.sh" \
+                            "\$PROFILE_DIR" \
+                            "\$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
+                            "\$REPORT_DIR/validation.json"
                     """
                 }
             }
