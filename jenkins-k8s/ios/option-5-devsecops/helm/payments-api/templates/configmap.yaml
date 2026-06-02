@@ -4,5 +4,8 @@ metadata:
   name: {{ .Release.Name }}-config
   namespace: {{ .Release.Namespace }}
 data:
-  APP_ENV: "{{ .Release.Namespace }}"
-  LOG_LEVEL: "info"
+  APP_ENV:               "{{ .Release.Namespace }}"
+  LOG_LEVEL:             "{{ .Values.config.logLevel }}"
+  DB_HOST:               "{{ .Values.config.dbHost }}"
+  FEATURE_FLAG_PAYMENTS: "{{ .Values.config.featureFlagPayments }}"
+  MAX_CONNECTIONS:       "{{ .Values.config.maxConnections }}"

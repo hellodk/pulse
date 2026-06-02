@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pulse CI — Build Intelligence Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ─── Design tokens ─── */
+    :root {
+      --bg:           #F9FAFB;
+      --surface:      #FFFFFF;
+      --border:       #E5E7EB;
+      --border-hover: #D1D5DB;
+      --text-primary: #111827;
+      --text-secondary: #6B7280;
+      --text-muted:   #9CA3AF;
+
+      --success:      #16A34A;
+      --success-bg:   #F0FDF4;
+      --success-ring: #BBF7D0;
+
+      --failure:      #DC2626;
+      --failure-bg:   #FEF2F2;
+      --failure-ring: #FECACA;
+
+      --unstable:     #D97706;
+      --unstable-bg:  #FFFBEB;
+      --unstable-ring:#FDE68A;
+
+      --running:      #2563EB;
+      --running-bg:   #EFF6FF;
+      --running-ring: #BFDBFE;
+
+      --aborted:      #374151;
+      --aborted-bg:   #F3F4F6;
+      --aborted-ring: #D1D5DB;
+
+      --radius:       10px;
+      --radius-sm:    6px;
+      --shadow:       0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+      --shadow-hover: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.04);
+      --transition:   160ms cubic-bezier(.4,0,.2,1);
+    }
+
+    /* ─── Reset ─── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text-primary);
+      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ─── Header ─── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(249,250,251,0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+    }
+    .header-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-logo .pulse-icon {
+      width: 28px;
+      height: 28px;
+      background: var(--text-primary);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .header-logo .pulse-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+    .header-title {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -.01em;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+    .header-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+    .header-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 3px 10px;
+      white-space: nowrap;
+    }
+    .header-chip .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: blink 2s ease-in-out infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .3; }
+    }
+    .refresh-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 5px 12px;
+      cursor: pointer;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+    .refresh-btn:hover {
+      border-color: var(--border-hover);
+      box-shadow: var(--shadow);
+    }
+    .refresh-btn svg {
+      width: 13px;
+      height: 13px;
+      transition: transform .5s ease;
+    }
+    .refresh-btn.spinning svg {
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Main layout ─── */
+    .main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+
+    /* ─── Summary row ─── */
+    .summary-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    @media (max-width: 900px) {
+      .summary-row { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 500px) {
+      .summary-row { grid-template-columns: 1fr; }
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      box-shadow: var(--shadow);
+    }
+    .stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 30px;
+      font-weight: 600;
+      line-height: 1;
+      color: var(--text-primary);
+    }
+    .stat-card.passing .stat-value { color: var(--success); }
+    .stat-card.failing .stat-value { color: var(--failure); }
+    .stat-card.updated .stat-value {
+      font-size: 13px;
+      font-weight: 400;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      margin-top: 4px;
+    }
+
+    /* ─── Section label ─── */
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+
+    /* ─── Jobs grid ─── */
+    .jobs-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+    @media (max-width: 860px) {
+      .jobs-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ─── Job card ─── */
+    .job-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+      cursor: pointer;
+    }
+    .job-card:hover {
+      border-color: var(--border-hover);
+      box-shadow: var(--shadow-hover);
+      transform: translateY(-1px);
+    }
+    .job-card.expanded {
+      border-color: var(--border-hover);
+    }
+
+    /* left accent bar */
+    .job-card::before {
+      content: '';
+      display: block;
+      height: 3px;
+      border-radius: 3px 3px 0 0;
+      background: var(--border);
+      transition: background var(--transition);
+    }
+    .job-card.status-SUCCESS::before  { background: var(--success); }
+    .job-card.status-FAILURE::before  { background: var(--failure); }
+    .job-card.status-UNSTABLE::before { background: var(--unstable); }
+    .job-card.status-IN_PROGRESS::before,
+    .job-card.status-RUNNING::before  { background: var(--running); }
+    .job-card.status-ABORTED::before  { background: var(--aborted); }
+
+    .job-body {
+      padding: 18px 20px 16px;
+    }
+
+    /* top row */
+    .job-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .job-icon {
+      font-size: 20px;
+      line-height: 1;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .job-title-block {
+      flex: 1;
+      min-width: 0;
+    }
+    .job-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      letter-spacing: -.01em;
+    }
+    .job-subtitle {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* status badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding: 3px 9px;
+      border-radius: 20px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .status-badge.SUCCESS  { background: var(--success-bg);  color: var(--success);  border-color: var(--success-ring); }
+    .status-badge.FAILURE  { background: var(--failure-bg);  color: var(--failure);  border-color: var(--failure-ring); }
+    .status-badge.UNSTABLE { background: var(--unstable-bg); color: var(--unstable); border-color: var(--unstable-ring); }
+    .status-badge.IN_PROGRESS,
+    .status-badge.RUNNING  { background: var(--running-bg);  color: var(--running);  border-color: var(--running-ring); }
+    .status-badge.ABORTED  { background: var(--aborted-bg);  color: var(--aborted);  border-color: var(--aborted-ring); }
+    .status-badge.UNKNOWN,
+    .status-badge.FETCHING { background: var(--aborted-bg);  color: var(--text-muted); border-color: var(--border); }
+
+    .status-badge .badge-pulse {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status-badge.IN_PROGRESS .badge-pulse,
+    .status-badge.RUNNING .badge-pulse {
+      animation: badge-blink 1s ease-in-out infinite;
+    }
+    @keyframes badge-blink {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: .4; transform: scale(.7); }
+    }
+
+    /* meta row */
+    .job-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 16px;
+      margin-bottom: 14px;
+    }
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .meta-key {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .meta-val {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .meta-val.highlight { color: var(--text-primary); font-weight: 500; }
+
+    /* failed stage */
+    .failed-stage {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--failure-bg);
+      border: 1px solid var(--failure-ring);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      margin-bottom: 12px;
+    }
+    .failed-stage-icon { font-size: 12px; flex-shrink: 0; }
+    .failed-stage-text {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      color: var(--failure);
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* build history dots */
+    .build-history {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+    .history-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-right: 4px;
+    }
+    .history-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      position: relative;
+      cursor: default;
+    }
+    .history-dot[title]:hover::after {
+      content: attr(title);
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--text-primary);
+      color: #fff;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .history-dot.SUCCESS  { background: var(--success); }
+    .history-dot.FAILURE  { background: var(--failure); }
+    .history-dot.UNSTABLE { background: var(--unstable); }
+    .history-dot.ABORTED  { background: var(--aborted); }
+    .history-dot.RUNNING,
+    .history-dot.IN_PROGRESS { background: var(--running); }
+    .history-dot.UNKNOWN  { background: var(--border); border: 1px solid var(--border-hover); }
+
+    /* footer row */
+    .job-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .expand-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: color var(--transition);
+    }
+    .job-card:hover .expand-hint { color: var(--text-secondary); }
+    .expand-hint svg {
+      width: 12px;
+      height: 12px;
+      transition: transform var(--transition);
+    }
+    .job-card.expanded .expand-hint svg { transform: rotate(180deg); }
+
+    .open-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px 10px;
+      transition: border-color var(--transition), color var(--transition), background var(--transition);
+    }
+    .open-btn:hover {
+      border-color: var(--text-primary);
+      color: var(--text-primary);
+      background: var(--bg);
+    }
+    .open-btn svg { width: 11px; height: 11px; }
+
+    /* ─── LLM panel ─── */
+    .llm-panel {
+      display: none;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      padding: 16px 20px;
+    }
+    .job-card.expanded .llm-panel { display: block; }
+
+    .llm-panel-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .llm-panel-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .llm-content {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11.5px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .llm-content::-webkit-scrollbar { width: 5px; }
+    .llm-content::-webkit-scrollbar-track { background: transparent; }
+    .llm-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .llm-loading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 8px 0;
+    }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--text-secondary);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .llm-error {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 8px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-style: italic;
+    }
+
+    /* ─── Skeleton shimmer ─── */
+    .skeleton {
+      display: inline-block;
+      background: linear-gradient(90deg, var(--border) 25%, #f3f4f6 50%, var(--border) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.4s ease-in-out infinite;
+      border-radius: 4px;
+      color: transparent;
+      user-select: none;
+    }
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* ─── Empty / error states ─── */
+    .no-builds {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* ─── Countdown ring ─── */
+    .countdown-ring {
+      position: relative;
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .countdown-ring svg {
+      width: 22px;
+      height: 22px;
+      transform: rotate(-90deg);
+    }
+    .countdown-ring circle {
+      fill: none;
+      stroke-width: 2;
+    }
+    .ring-bg   { stroke: var(--border); }
+    .ring-fg   { stroke: var(--text-secondary); stroke-linecap: round; transition: stroke-dashoffset .9s linear; }
+    .countdown-num {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 8px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    /* ─── Responsive header ─── */
+    @media (max-width: 640px) {
+      .header-title { font-size: 13px; }
+      .header-chip  { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ░░ HEADER ░░ -->
+<header class="header">
+  <div class="header-inner">
+    <div class="header-logo">
+      <div class="pulse-icon">
+        <!-- waveform icon -->
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polyline points="1,8 3,8 4,3 6,13 8,5 10,11 12,8 15,8" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <span class="header-title">Pulse CI — Build Intelligence Dashboard</span>
+    </div>
+
+    <div class="header-sep"></div>
+
+    <div class="header-meta">
+      <div class="header-chip">
+        <span class="dot"></span>
+        <span>Last updated: <span id="last-refresh-time">—</span></span>
+      </div>
+
+      <!-- countdown ring -->
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="countdown-ring" title="Auto-refresh countdown">
+          <svg viewBox="0 0 22 22">
+            <circle class="ring-bg" cx="11" cy="11" r="9"/>
+            <circle class="ring-fg" id="ring-fg" cx="11" cy="11" r="9"
+              stroke-dasharray="56.55"
+              stroke-dashoffset="0"/>
+          </svg>
+          <div class="countdown-num" id="countdown-num">30</div>
+        </div>
+        <span style="font-size:11px;color:var(--text-muted);">sec</span>
+      </div>
+
+      <button class="refresh-btn" id="refresh-btn" onclick="triggerRefresh()">
+        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1.5 7A5.5 5.5 0 0112.5 7"/>
+          <polyline points="10,4.5 12.5,4.5 12.5,7"/>
+          <path d="M12.5 7A5.5 5.5 0 011.5 7"/>
+          <polyline points="4,9.5 1.5,9.5 1.5,7"/>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ░░ MAIN ░░ -->
+<main class="main">
+
+  <!-- Summary cards -->
+  <div class="summary-row">
+    <div class="stat-card">
+      <div class="stat-label">Pipelines Monitored</div>
+      <div class="stat-value">6</div>
+    </div>
+    <div class="stat-card passing">
+      <div class="stat-label">Passing</div>
+      <div class="stat-value" id="stat-passing">—</div>
+    </div>
+    <div class="stat-card failing">
+      <div class="stat-label">Failing</div>
+      <div class="stat-value" id="stat-failing">—</div>
+    </div>
+    <div class="stat-card updated">
+      <div class="stat-label">Last Updated</div>
+      <div class="stat-value" id="stat-updated">Fetching…</div>
+    </div>
+  </div>
+
+  <!-- Jobs section -->
+  <div class="section-label">Pipelines</div>
+  <div class="jobs-grid" id="jobs-grid">
+    <!-- Cards injected by JS -->
+  </div>
+
+</main>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   CONFIG
+═══════════════════════════════════════════════════════════ */
+const JENKINS_BASE = 'http://100.89.50.27:30881'
+const AUTH         = 'Basic ' + btoa('admin:admin123')
+const HEADERS      = { 'Authorization': AUTH }
+const REFRESH_SEC  = 30
+const IST_OPTS     = { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short', year: 'numeric' }
+
+const JOBS = [
+  { id: 'ios-swift-xcodebuild',  label: 'ios-swift-xcodebuild',  icon: '🍎', apiPath: 'job/ios-swift-xcodebuild'  },
+  { id: 'ios-fastlane',          label: 'ios-fastlane',           icon: '🍎', apiPath: 'job/ios-fastlane'          },
+  { id: 'ios-react-native',      label: 'ios-react-native',       icon: '🍎', apiPath: 'job/ios-react-native'      },
+  { id: 'android-build',         label: 'android-build',          icon: '🤖', apiPath: 'job/android-build'         },
+  { id: 'Pulse-iOS-Enterprise',  label: 'Pulse-iOS-Enterprise',   icon: '🍎', apiPath: 'job/Pulse-iOS-Enterprise'  },
+  { id: 'devsecops',             label: 'devsecops / master',     icon: '🛡️', apiPath: 'job/devsecops/job/master'  },
+]
+
+/* ═══════════════════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════════════════ */
+const jobData    = {}          // id → fetched data
+const llmCache   = {}          // id → llm text or null
+const expanded   = new Set()   // expanded card ids
+
+let countdownVal = REFRESH_SEC
+let countdownTimer = null
+
+/* ═══════════════════════════════════════════════════════════
+   UTILITIES
+═══════════════════════════════════════════════════════════ */
+function fmtIST(ms) {
+  if (!ms) return '—'
+  try {
+    return new Intl.DateTimeFormat('en-IN', IST_OPTS).format(new Date(ms))
+  } catch { return '—' }
+}
+
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return '—'
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const h = Math.floor(m / 60)
+  if (h > 0) return `${h}h ${m % 60}m`
+  if (m > 0) return `${m}m ${s % 60}s`
+  return `${s}s`
+}
+
+function statusEmoji(result) {
+  const map = { SUCCESS:'✅', FAILURE:'❌', UNSTABLE:'⚠️', ABORTED:'⛔', IN_PROGRESS:'🔄', RUNNING:'🔄' }
+  return map[result] || '❓'
+}
+
+function statusLabel(result) {
+  const map = { SUCCESS:'SUCCESS', FAILURE:'FAILURE', UNSTABLE:'UNSTABLE', ABORTED:'ABORTED', IN_PROGRESS:'RUNNING', RUNNING:'RUNNING' }
+  return map[result] || (result || 'UNKNOWN')
+}
+
+function normaliseResult(r) {
+  if (!r) return 'IN_PROGRESS'
+  return r.toUpperCase()
+}
+
+/* ═══════════════════════════════════════════════════════════
+   API
+═══════════════════════════════════════════════════════════ */
+const TREE = 'name,lastBuild[number,result,timestamp,duration,url,actions[failedLeaves[displayName]]],builds[number,result,timestamp]'
+
+async function fetchJob(job) {
+  const url = `${JENKINS_BASE}/${job.apiPath}/api/json?tree=${encodeURIComponent(TREE)}`
+  const res = await fetch(url, { headers: HEADERS })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+async function fetchLLM(job, buildNum) {
+  const url = `${JENKINS_BASE}/${job.apiPath}/${buildNum}/artifact/llm-analysis.md`
+  const res = await fetch(url, { headers: HEADERS })
+  if (!res.ok) return null
+  return res.text()
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RENDER
+═══════════════════════════════════════════════════════════ */
+function buildCardHTML(job, data) {
+  const lb     = data?.lastBuild
+  const result = lb ? normaliseResult(lb.result) : 'UNKNOWN'
+  const builds = (data?.builds || [])
+  const isExpanded = expanded.has(job.id)
+
+  // failed stage — from failedLeaves
+  let failedStage = ''
+  if (result === 'FAILURE' && lb?.actions) {
+    for (const a of lb.actions) {
+      if (a?.failedLeaves && a.failedLeaves.length > 0) {
+        failedStage = a.failedLeaves[0].displayName || ''
+        break
+      }
+    }
+  }
+
+  // build url
+  const buildUrl = lb?.url || `${JENKINS_BASE}/${job.apiPath}/`
+
+  // history dots
+  const dotsHTML = builds.length === 0
+    ? `<span class="no-builds">No history</span>`
+    : builds.map(b => {
+        const r = normaliseResult(b.result)
+        const ts = fmtIST(b.timestamp)
+        return `<span class="history-dot ${r}" title="#${b.number} · ${statusLabel(r)} · ${ts}"></span>`
+      }).join('')
+
+  return `
+<div class="job-card status-${result}${isExpanded ? ' expanded' : ''}" id="card-${job.id}" onclick="toggleCard('${job.id}', event)">
+  <div class="job-body">
+    <div class="job-header">
+      <span class="job-icon">${job.icon}</span>
+      <div class="job-title-block">
+        <div class="job-name">${job.label}</div>
+        <div class="job-subtitle">${lb ? `#${lb.number}` : 'No builds yet'}</div>
+      </div>
+      <div class="status-badge ${result}">
+        <span class="badge-pulse"></span>
+        ${statusEmoji(result)} ${statusLabel(result)}
+      </div>
+    </div>
+
+    <div class="job-meta">
+      <div class="meta-item">
+        <span class="meta-key">Last Run</span>
+        <span class="meta-val">${lb ? fmtIST(lb.timestamp) : '—'}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">Duration</span>
+        <span class="meta-val highlight">${lb ? fmtDuration(lb.duration) : '—'}</span>
+      </div>
+    </div>
+
+    ${result === 'FAILURE' && failedStage ? `
+    <div class="failed-stage">
+      <span class="failed-stage-icon">⚡</span>
+      <span class="failed-stage-text">Failed at: ${escHtml(failedStage)}</span>
+    </div>` : ''}
+
+    <div class="build-history">
+      <span class="history-label">Last 5</span>
+      ${dotsHTML}
+    </div>
+
+    <div class="job-footer">
+      <span class="expand-hint">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="2,4 6,8 10,4"/>
+        </svg>
+        LLM Analysis
+      </span>
+      <a class="open-btn" href="${buildUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">
+        <svg viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 2H2a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V6"/>
+          <polyline points="7,1 10,1 10,4"/>
+          <line x1="5" y1="6" x2="10" y2="1"/>
+        </svg>
+        Open Build
+      </a>
+    </div>
+  </div>
+
+  <!-- LLM panel -->
+  <div class="llm-panel" id="llm-${job.id}">
+    <div class="llm-panel-title">🤖 LLM Failure Analysis</div>
+    <div class="llm-inner" id="llm-inner-${job.id}">
+      <div class="llm-loading"><div class="spinner"></div> Fetching analysis…</div>
+    </div>
+  </div>
+</div>`
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+function skeletonCard(job) {
+  return `
+<div class="job-card" id="card-${job.id}">
+  <div class="job-body">
+    <div class="job-header">
+      <span class="job-icon">${job.icon}</span>
+      <div class="job-title-block">
+        <div class="job-name">${job.label}</div>
+        <div class="job-subtitle skeleton">loading…</div>
+      </div>
+      <span class="status-badge FETCHING"><span class="badge-pulse"></span> Fetching</span>
+    </div>
+    <div class="job-meta">
+      <div class="meta-item"><span class="meta-key">Last Run</span><span class="meta-val skeleton">—— —— ————</span></div>
+      <div class="meta-item"><span class="meta-key">Duration</span><span class="meta-val skeleton">—m —s</span></div>
+    </div>
+    <div class="build-history">
+      <span class="history-label">Last 5</span>
+      <span class="history-dot UNKNOWN"></span>
+      <span class="history-dot UNKNOWN"></span>
+      <span class="history-dot UNKNOWN"></span>
+      <span class="history-dot UNKNOWN"></span>
+      <span class="history-dot UNKNOWN"></span>
+    </div>
+    <div class="job-footer">
+      <span class="expand-hint" style="opacity:.4">LLM Analysis</span>
+      <a class="open-btn" href="${JENKINS_BASE}/${job.apiPath}/" target="_blank" rel="noopener" onclick="event.stopPropagation()">
+        <svg viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 2H2a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V6"/>
+          <polyline points="7,1 10,1 10,4"/>
+          <line x1="5" y1="6" x2="10" y2="1"/>
+        </svg>
+        Open
+      </a>
+    </div>
+  </div>
+</div>`
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STATS
+═══════════════════════════════════════════════════════════ */
+function updateStats() {
+  let passing = 0, failing = 0
+  for (const job of JOBS) {
+    const d = jobData[job.id]
+    if (!d) continue
+    const r = normaliseResult(d.lastBuild?.result)
+    if (r === 'SUCCESS')  passing++
+    if (r === 'FAILURE')  failing++
+  }
+  document.getElementById('stat-passing').textContent = passing
+  document.getElementById('stat-failing').textContent = failing
+
+  const now = fmtIST(Date.now())
+  document.getElementById('stat-updated').textContent    = now
+  document.getElementById('last-refresh-time').textContent = now.split(', ').pop() || now  // time portion
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CARD TOGGLE / LLM
+═══════════════════════════════════════════════════════════ */
+function toggleCard(jobId, evt) {
+  // Don't toggle when clicking open-btn
+  if (evt?.target?.closest('.open-btn')) return
+
+  const job  = JOBS.find(j => j.id === jobId)
+  const card = document.getElementById(`card-${jobId}`)
+  if (!card) return
+
+  if (expanded.has(jobId)) {
+    expanded.delete(jobId)
+    card.classList.remove('expanded')
+  } else {
+    expanded.add(jobId)
+    card.classList.add('expanded')
+    loadLLM(job)
+  }
+}
+
+async function loadLLM(job) {
+  const inner = document.getElementById(`llm-inner-${job.id}`)
+  if (!inner) return
+
+  // Already cached
+  if (llmCache[job.id] !== undefined) {
+    renderLLM(inner, llmCache[job.id])
+    return
+  }
+
+  inner.innerHTML = `<div class="llm-loading"><div class="spinner"></div> Fetching analysis…</div>`
+
+  const d = jobData[job.id]
+  const lb = d?.lastBuild
+  if (!lb) {
+    llmCache[job.id] = null
+    renderLLM(inner, null)
+    return
+  }
+
+  const result = normaliseResult(lb.result)
+  if (result !== 'FAILURE') {
+    llmCache[job.id] = '__noanalysis__'
+    renderLLM(inner, '__noanalysis__')
+    return
+  }
+
+  try {
+    const text = await fetchLLM(job, lb.number)
+    llmCache[job.id] = text
+    renderLLM(inner, text)
+  } catch {
+    llmCache[job.id] = null
+    renderLLM(inner, null)
+  }
+}
+
+function renderLLM(inner, text) {
+  if (text === null || text === undefined) {
+    inner.innerHTML = `<div class="llm-error">⚠ LLM analysis not available for this build.</div>`
+    return
+  }
+  if (text === '__noanalysis__') {
+    inner.innerHTML = `<div class="llm-error">ℹ LLM analysis is only shown for FAILURE builds.</div>`
+    return
+  }
+  const display = text.length > 1800 ? text.slice(0, 1800) + '\n\n… [truncated]' : text
+  inner.innerHTML = `<pre class="llm-content">${escHtml(display)}</pre>`
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DATA FETCH
+═══════════════════════════════════════════════════════════ */
+async function fetchAll() {
+  const btn = document.getElementById('refresh-btn')
+  btn.classList.add('spinning')
+
+  // Reset LLM cache on refresh but keep expanded state
+  for (const k of Object.keys(llmCache)) delete llmCache[k]
+
+  await Promise.allSettled(
+    JOBS.map(async job => {
+      try {
+        const data = await fetchJob(job)
+        jobData[job.id] = data
+        renderCard(job, data)
+      } catch(e) {
+        renderCardError(job, e)
+      }
+    })
+  )
+
+  updateStats()
+  btn.classList.remove('spinning')
+
+  // Re-load LLM for any open expanded cards
+  for (const jobId of expanded) {
+    const job = JOBS.find(j => j.id === jobId)
+    if (job) loadLLM(job)
+  }
+}
+
+function renderCard(job, data) {
+  const card = document.getElementById(`card-${job.id}`)
+  if (!card) return
+  const html = buildCardHTML(job, data)
+  const tmp = document.createElement('div')
+  tmp.innerHTML = html
+  const newCard = tmp.firstElementChild
+  if (expanded.has(job.id)) newCard.classList.add('expanded')
+  card.replaceWith(newCard)
+}
+
+function renderCardError(job, err) {
+  const card = document.getElementById(`card-${job.id}`)
+  if (!card) return
+  card.innerHTML = `
+    <div class="job-body">
+      <div class="job-header">
+        <span class="job-icon">${job.icon}</span>
+        <div class="job-title-block"><div class="job-name">${job.label}</div></div>
+        <span class="status-badge UNKNOWN">⛔ Error</span>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);font-family:'IBM Plex Mono',monospace;padding:4px 0">${escHtml(String(err?.message || err))}</p>
+    </div>`
+}
+
+/* ═══════════════════════════════════════════════════════════
+   COUNTDOWN
+═══════════════════════════════════════════════════════════ */
+const CIRCUMFERENCE = 2 * Math.PI * 9  // r=9 → ~56.55
+const ringFg        = document.getElementById('ring-fg')
+const countdownNum  = document.getElementById('countdown-num')
+
+function setCountdown(val) {
+  countdownVal = val
+  const frac = val / REFRESH_SEC
+  const offset = CIRCUMFERENCE * (1 - frac)
+  ringFg.style.strokeDashoffset = offset
+  countdownNum.textContent = val
+}
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer)
+  setCountdown(REFRESH_SEC)
+  countdownTimer = setInterval(() => {
+    countdownVal--
+    if (countdownVal <= 0) {
+      clearInterval(countdownTimer)
+      triggerRefresh()
+    } else {
+      setCountdown(countdownVal)
+    }
+  }, 1000)
+}
+
+async function triggerRefresh() {
+  if (countdownTimer) clearInterval(countdownTimer)
+  await fetchAll()
+  startCountdown()
+}
+
+/* ═══════════════════════════════════════════════════════════
+   INIT
+═══════════════════════════════════════════════════════════ */
+function init() {
+  const grid = document.getElementById('jobs-grid')
+  grid.innerHTML = JOBS.map(skeletonCard).join('')
+  triggerRefresh()
+}
+
+init()
+</script>
+</body>
+</html>

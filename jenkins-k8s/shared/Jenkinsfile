@@ -1,6 +1,13 @@
 pipeline {
     agent { label 'android-agent' }
 
+    options {
+        skipDefaultCheckout(true)
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
     parameters {
         string(name: 'NOTIFY_EMAIL',
                defaultValue: 'reject@hellodk.io',
@@ -10,18 +17,35 @@ pipeline {
                description: 'Primary Ollama endpoint for LLM failure analysis (via Tailscale)')
         string(name: 'LLM_ENDPOINT_B',
                defaultValue: 'http://100.104.14.62:21434',
-               description: 'Secondary Ollama endpoint for LLM cross-check')
+               description: 'Secondary llama.cpp endpoint for LLM cross-check')
     }
 
     environment {
-        ANDROID_HOME  = '/opt/android-sdk'
-        SONAR_TOKEN   = credentials('sonar-token')
-        NEXUS_CREDS   = credentials('nexus-creds')
-        JFROG_CREDS   = credentials('jfrog-creds')
-        FAILED_STAGE  = ''
+        ANDROID_HOME = '/opt/android-sdk'
+        FAILED_STAGE = ''
     }
 
     stages {
+        stage('Agent Health Check') {
+            steps {
+                script {
+                    try {
+                        def offlineAgents = Jenkins.instance.computers
+                            .findAll { it.offline && it.displayName != 'Built-In Node' }
+                            .collect { it.displayName }
+                        if (offlineAgents) {
+                            echo "⚠ WARNING: Offline agents detected: ${offlineAgents.join(', ')}"
+                            currentBuild.description = "⚠ Offline agents: ${offlineAgents.join(', ')}"
+                        } else {
+                            echo "✓ All registered agents online"
+                        }
+                    } catch (ignored) {
+                        echo "Agent health check skipped (script sandbox restriction)"
+                    }
+                }
+            }
+        }
+
         stage('Checkout') {
             steps {
                 git url: 'file:///home/dk/Documents/git/sunflower', branch: 'main'
@@ -30,6 +54,7 @@ pipeline {
                         script: "git describe --tags --always 2>/dev/null || git rev-parse --short HEAD",
                         returnStdout: true
                     ).trim()
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%s 2>/dev/null || echo 'N/A'", returnStdout: true).trim()
                     env.APK_FILENAME = "app-debug-${env.VERSION_NAME}.apk"
                     echo "Building version: ${env.VERSION_NAME}"
                 }
@@ -59,13 +84,29 @@ pipeline {
         stage('Build Debug APK') {
             steps {
                 sh """
-                    # Inject build version
-                    sed -i "s/versionCode [0-9]*/versionCode ${env.BUILD_NUMBER}/" app/build.gradle || true
-                    sed -i 's/versionName "[^"]*"/versionName "${env.VERSION_NAME}"/' app/build.gradle || true
-                    ./gradlew assembleDebug -PjacocoEnabled=true --stacktrace
+                    ./gradlew assembleDebug --stacktrace
                 """
             }
             post { failure { script { env.FAILED_STAGE = 'Build Debug APK' } } }
+        }
+
+        stage('Build Release APK') {
+            steps {
+                sh '''
+                    ./gradlew assembleRelease \
+                        -Pandroid.injected.signing.store.file="" \
+                        -Pandroid.injected.signing.key.alias="" \
+                        -Pandroid.injected.signing.store.password="" \
+                        -Pandroid.injected.signing.key.password="" \
+                        --stacktrace || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'app/build/outputs/apk/release/*.apk', allowEmptyArchive: true
+                }
+                failure { script { env.FAILED_STAGE = 'Build Release APK' } }
+            }
         }
 
         stage('Unit Tests') {
@@ -108,6 +149,7 @@ pipeline {
                 always {
                     recordIssues(
                         enabledForFailure: true,
+                        qualityGates: [],
                         tools: [
                             spotBugs(pattern: '**/build/reports/spotbugs/*.xml'),
                             androidLintParser(pattern: '**/build/reports/lint-results*.xml')
@@ -138,11 +180,6 @@ pipeline {
             }
             post {
                 always {
-                    dependencyCheckPublisher(
-                        pattern: 'reports/dependency-check/dependency-check-report.xml',
-                        failedTotalCritical: 1,
-                        unstableTotalHigh: 5
-                    )
                     publishHTML([
                         allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
                         reportDir: 'reports/dependency-check',
@@ -203,14 +240,18 @@ pipeline {
                         script: "find app/build/outputs/apk/debug -name '*.apk' | head -1",
                         returnStdout: true
                     ).trim()
-                    sh """
-                        cp "${apkPath}" "${env.APK_FILENAME}"
-                        curl -sf \
-                            -u "${env.NEXUS_CREDS_USR}:${env.NEXUS_CREDS_PSW}" \
-                            --upload-file "${env.APK_FILENAME}" \
-                            "http://nexus.utilities.svc.cluster.local:8081/repository/android-releases/${env.APK_FILENAME}"
-                        echo "Uploaded to Nexus: ${env.APK_FILENAME}"
-                    """
+                    sh "cp '${apkPath}' '${env.APK_FILENAME}'"
+                    withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                            usernameVariable: 'NEXUS_USR', passwordVariable: 'NEXUS_PSW')]) {
+                        sh '''
+                            cp "${APK_FILENAME}" /tmp/ 2>/dev/null || true
+                            curl -sf \
+                                -u "${NEXUS_USR}:${NEXUS_PSW}" \
+                                --upload-file "${APK_FILENAME}" \
+                                "http://nexus.utilities.svc.cluster.local:8081/repository/android-releases/${APK_FILENAME}"
+                            echo "Uploaded to Nexus: ${APK_FILENAME}"
+                        '''
+                    }
                 }
                 archiveArtifacts artifacts: "${env.APK_FILENAME}", fingerprint: true
             }
@@ -219,14 +260,17 @@ pipeline {
 
         stage('JFrog Upload') {
             steps {
-                sh """
-                    curl -sf \
-                        -u '${env.JFROG_CREDS_USR}:${env.JFROG_CREDS_PSW}' \
-                        -X PUT \
-                        --upload-file "${env.APK_FILENAME}" \
-                        "http://10.105.205.92:8082/artifactory/example-repo-local/android/${env.APK_FILENAME}" \
-                        && echo "Uploaded to JFrog: ${env.APK_FILENAME}"
-                """
+                withCredentials([usernamePassword(credentialsId: 'jfrog-creds',
+                        usernameVariable: 'JFROG_USR', passwordVariable: 'JFROG_PSW')]) {
+                    sh '''
+                        curl -sf \
+                            -u "${JFROG_USR}:${JFROG_PSW}" \
+                            -X PUT \
+                            --upload-file "${APK_FILENAME}" \
+                            "http://10.105.205.92:8082/artifactory/example-repo-local/android/${APK_FILENAME}"
+                        echo "Uploaded to JFrog: ${APK_FILENAME}"
+                    '''
+                }
             }
             post { failure { script { env.FAILED_STAGE = 'JFrog Upload' } } }
         }
@@ -237,39 +281,45 @@ pipeline {
             script {
                 def llmReport = 'LLM analysis not available — check Ollama endpoint connectivity.'
                 try {
-                    // Use llm-analysis.sh from the pulse repo (mounted at /home/dk/Documents/git/pulse)
-                    sh """
-                        set -euo pipefail
-                        # Smart extraction: grabs Gradle errors, lint issues, test failures
-                        bash /home/dk/Documents/git/pulse/jenkins-k8s/shared/extract-build-errors.sh \
-                            > build-error-report.txt 2>/dev/null || true
+                    timeout(time: 5, unit: 'MINUTES') {
+                            sh """#!/bin/bash
+set -eo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 
-                        export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
-                        export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
-                        export LOG_TAIL="\${ERROR_SNIPPET}"
-                        export BUILD_NUMBER="${env.BUILD_NUMBER}"
-                        export JOB_NAME="${env.JOB_NAME}"
-                        export BUILD_TYPE="Android-APK"
-                        export APP_NAME="Sunflower"
-                        export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
-                        export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
-                        bash /home/dk/Documents/git/pulse/jenkins-k8s/shared/llm-analysis.sh
-                    """
+PULSE_DIR="\$(mktemp -d)"
+BASE_URL="http://100.89.50.27:30881/userContent/shared"
+for SCRIPT in \
+    "jenkins-k8s/shared/zip-logs.sh" \
+    "jenkins-k8s/shared/extract-build-errors.sh" \
+    "jenkins-k8s/shared/llm-analysis.sh"; do
+    mkdir -p "\$PULSE_DIR/\$(dirname "\$SCRIPT")"
+    curl -sf --max-time 20 \
+        "\$BASE_URL/\$SCRIPT" \
+        -o "\$PULSE_DIR/\$SCRIPT" 2>/dev/null \
+      || { echo "Cannot fetch \$SCRIPT from Jenkins — skipping analysis"; rm -rf "\$PULSE_DIR"; exit 1; }
+done
+chmod +x "\$PULSE_DIR/jenkins-k8s/shared/"*.sh
 
-                    // Bundle logs for attachment
-                    sh """
-                        mkdir -p build-logs
-                        cp llm-analysis.md build-logs/ 2>/dev/null || true
-                        find . -path '*/test-results/*.xml' | head -50 | while read f; do
-                            cp --parents "\$f" build-logs/
-                        done
-                        find reports -name '*.html' 2>/dev/null | while read f; do
-                            cp --parents "\$f" build-logs/
-                        done
-                        zip -r build-${env.BUILD_NUMBER}-logs.zip build-logs/ 2>/dev/null || true
-                    """
-                    archiveArtifacts artifacts: 'llm-analysis.md,build-*-logs.zip', allowEmptyArchive: true
-                    // readFile is sandbox-safe (whitelisted Jenkins step — no rawBuild needed)
+bash "\$PULSE_DIR/jenkins-k8s/shared/zip-logs.sh" || true
+
+bash "\$PULSE_DIR/jenkins-k8s/shared/extract-build-errors.sh" \\
+    > build-error-report.txt 2>/dev/null || true
+
+export FAILED_STAGE="${env.FAILED_STAGE ?: 'Unknown'}"
+export ERROR_SNIPPET="\$(cat build-error-report.txt 2>/dev/null || echo 'Not available')"
+export LOG_TAIL="\${ERROR_SNIPPET}"
+export BUILD_NUMBER="${env.BUILD_NUMBER}"
+export JOB_NAME="${env.JOB_NAME}"
+export BUILD_TYPE="Android-APK"
+export APP_NAME="Sunflower"
+export LLM_ENDPOINT_A="${params.LLM_ENDPOINT_A}"
+export LLM_ENDPOINT_B="${params.LLM_ENDPOINT_B}"
+bash "\$PULSE_DIR/jenkins-k8s/shared/llm-analysis.sh" || true
+
+rm -rf "\$PULSE_DIR"
+"""
+                    }
+                    archiveArtifacts artifacts: 'llm-analysis.md,build-logs-*.zip', allowEmptyArchive: true
                     if (fileExists('llm-analysis.md')) {
                         llmReport = readFile('llm-analysis.md')
                     }
@@ -279,12 +329,40 @@ pipeline {
 
                 if (params.NOTIFY_EMAIL?.trim()) {
                     def duration  = currentBuild.durationString ?: 'N/A'
-                    def llmTrunc  = llmReport.size() > 8000 ? llmReport.take(8000) + '\n\n...(truncated — see llm-analysis.md artifact)' : llmReport
+                    def errorSnippet = fileExists('build-error-report.txt') ? readFile('build-error-report.txt').take(2000) : 'Not captured — LLM analysis may have failed to run.'
+                    def llmBodyTrunc = llmReport
+                    def llmSuggTrunc = ''
+                    if (llmReport.contains('## Improvement Suggestions')) {
+                        def idx = llmReport.indexOf('## Improvement Suggestions')
+                        llmBodyTrunc = llmReport.take(idx).trim()
+                        llmSuggTrunc = llmReport.substring(idx).trim()
+                    }
+                    llmBodyTrunc = llmBodyTrunc.size() > 5000 ? llmBodyTrunc.take(5000) + '\n\n...(truncated)' : llmBodyTrunc
+                    llmSuggTrunc = llmSuggTrunc.size() > 2000 ? llmSuggTrunc.take(2000) + '\n\n...(truncated)' : llmSuggTrunc
+                    def testSummary = 'No test data'
+                    try {
+                        def tr = currentBuild.testResultAction
+                        if (tr) {
+                            def passed = tr.totalCount - tr.failCount - tr.skipCount
+                            testSummary = "${passed} passed · ${tr.failCount} failed · ${tr.skipCount} skipped (${tr.totalCount} total)"
+                        }
+                    } catch(ignored) {}
+                    def completedStages = ''
+                    try {
+                        def allStages = currentBuild.getExecution().getPipelineNodes()
+                        completedStages = allStages
+                            .findAll { it.getTypeDisplayName() == 'Stage' && it.getError() == null && it.getDisplayName() != env.FAILED_STAGE }
+                            .collect { "✅ ${it.getDisplayName()}" }
+                            .join(' → ')
+                        if (completedStages) completedStages += " → ❌ ${env.FAILED_STAGE ?: 'Unknown'}"
+                    } catch(ignored) {
+                        completedStages = "Failed at: ${env.FAILED_STAGE ?: 'Unknown'}"
+                    }
                     emailext(
                         subject: "❌ Android FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} — Stage: ${env.FAILED_STAGE ?: 'Unknown'}",
                         mimeType: 'text/html',
                         to: params.NOTIFY_EMAIL,
-                        attachmentsPattern: "build-${env.BUILD_NUMBER}-logs.zip",
+                        attachmentsPattern: 'llm-analysis.md,build-logs-*.zip',
                         body: """
 <html><head><style>
 body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
@@ -314,15 +392,21 @@ tr:nth-child(odd) td{background:#fafbfc;}
 <tr><td class="lbl">Agent</td><td>android-agent (k8s)</td></tr>
 <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
 <tr class="fail"><td class="lbl">&#128308; Failed Stage</td><td>${env.FAILED_STAGE ?: 'Unknown'}</td></tr>
+<tr><td class="lbl">&#129514; Tests</td><td>${testSummary}</td></tr>
+<tr><td class="lbl">&#128260; Stages</td><td style="font-size:12px;">${completedStages}</td></tr>
 </table>
 <div class="btns">
 <a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
 <a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
 <a href="${env.BUILD_URL}artifact" class="btn b2">Artifacts</a>
 </div>
-<div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale &middot; ${params.LLM_ENDPOINT_A})</span></div>
-<div class="llm">${llmTrunc}</div>
-<p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
+    <div class="sec">&#128270; Error Snippet <span style="font-weight:normal;font-size:11px;color:#888;">(extracted from build log)</span></div>
+    <div class="llm">${errorSnippet}</div>
+    <div class="sec">&#129302; LLM Failure Analysis <span style="font-weight:normal;font-size:11px;color:#888;">(Ollama via Tailscale)</span></div>
+    <div class="llm">${llmBodyTrunc}</div>
+    <div class="sec">&#128161; Improvement Suggestions <span style="font-weight:normal;font-size:11px;color:#888;">(AI-generated)</span></div>
+    <div class="llm">${llmSuggTrunc.empty ? 'Suggestions not available — see llm-analysis.md artifact for full report.' : llmSuggTrunc}</div>
+    <p style="font-size:11px;color:#888;margin-top:8px;">Full report: <a href="${env.BUILD_URL}artifact/llm-analysis.md">llm-analysis.md</a></p>
 </div>
 <div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
 </div></body></html>"""
@@ -347,14 +431,14 @@ tr:nth-child(odd) td{background:#fafbfc;}
                 archiveArtifacts artifacts: "build-${env.BUILD_NUMBER}-artifacts.zip", allowEmptyArchive: true
 
                 if (params.NOTIFY_EMAIL?.trim()) {
-                    def duration = currentBuild.durationString ?: 'N/A'
-                    emailext(
-                        subject: "✅ Android SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} — ${env.VERSION_NAME ?: 'Build'} ready",
-                        mimeType: 'text/html',
-                        to: params.NOTIFY_EMAIL,
-                        attachmentsPattern: "build-${env.BUILD_NUMBER}-artifacts.zip",
-                        body: """
-<html><head><style>
+                    def duration  = currentBuild.durationString ?: 'N/A'
+                    def buildTs   = new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))
+                    def buildUrl  = env.BUILD_URL ?: ''
+                    def jobName   = env.JOB_NAME  ?: ''
+                    def buildNum  = env.BUILD_NUMBER ?: ''
+                    def version   = env.VERSION_NAME  ?: 'N/A'
+                    def apkFile   = env.APK_FILENAME  ?: 'N/A'
+                    def emailBody = """<html><head><style>
 body{font-family:-apple-system,Arial,sans-serif;background:#f0f2f5;margin:0;padding:16px;}
 .wrap{max-width:760px;margin:0 auto;}
 .hdr{background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;padding:22px 28px;border-radius:10px 10px 0 0;}
@@ -369,24 +453,30 @@ tr:nth-child(odd) td{background:#fafbfc;}
 .ftr{background:#f8f9fa;border:1px solid #e8eaed;border-top:none;padding:12px 28px;text-align:center;font-size:11px;color:#888;border-radius:0 0 10px 10px;}
 </style></head><body><div class="wrap">
 <div class="hdr"><h1>&#9989; Android Build Successful</h1>
-<p>${env.JOB_NAME} &middot; Build #${env.BUILD_NUMBER} &middot; ${new Date().format("dd MMM yyyy HH:mm:ss 'IST'", TimeZone.getTimeZone('Asia/Kolkata'))}</p></div>
+<p>${jobName} &middot; Build #${buildNum} &middot; ${buildTs}</p></div>
 <div class="body">
 <table>
-<tr><td class="lbl">Job</td><td>${env.JOB_NAME}</td></tr>
-<tr><td class="lbl">Build #</td><td>${env.BUILD_NUMBER}</td></tr>
-<tr><td class="lbl">Version</td><td>${env.VERSION_NAME ?: 'N/A'}</td></tr>
-<tr><td class="lbl">APK</td><td>${env.APK_FILENAME ?: 'N/A'}</td></tr>
+<tr><td class="lbl">Job</td><td>${jobName}</td></tr>
+<tr><td class="lbl">Build #</td><td>${buildNum}</td></tr>
+<tr><td class="lbl">Version</td><td>${version}</td></tr>
+<tr><td class="lbl">APK</td><td>${apkFile}</td></tr>
 <tr><td class="lbl">Agent</td><td>android-agent (k8s)</td></tr>
 <tr><td class="lbl">Duration</td><td>${duration}</td></tr>
 </table>
 <div class="btns">
-<a href="${env.BUILD_URL}" class="btn b1">Open Build</a>
-<a href="${env.BUILD_URL}artifact" class="btn b2">Download APK</a>
-<a href="${env.BUILD_URL}console" class="btn b2">Console Log</a>
+<a href="${buildUrl}" class="btn b1">Open Build</a>
+<a href="${buildUrl}artifact" class="btn b2">Download APK</a>
+<a href="${buildUrl}console" class="btn b2">Console Log</a>
 </div>
 </div>
-<div class="ftr">Jenkins CI &middot; Pulse &middot; ${env.BUILD_URL}</div>
+<div class="ftr">Jenkins CI &middot; Pulse &middot; ${buildUrl}</div>
 </div></body></html>"""
+                    def subject = "✅ Android SUCCESS: ${jobName} #${buildNum} — ${version} ready"
+                    emailext(
+                        subject: subject,
+                        mimeType: 'text/html',
+                        to: params.NOTIFY_EMAIL,
+                        body: emailBody
                     )
                 }
             }

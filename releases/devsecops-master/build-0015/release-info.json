@@ -1,0 +1,12 @@
+{
+  "build":        15,
+  "version":      "v15-60ee916",
+  "commit":       "60ee916b80e8da5ce6025a3361758f7c88bf0df4",
+  "short_sha":    "60ee916",
+  "environment":  "prod",
+  "timestamp":    "2026-05-18T23:52:44 IST",
+  "pipeline":     "devsecops/master",
+  "dashboard_url":"http://192.168.1.10:30881/job/devsecops/job/master/15/Release_20Preview_20Dashboard/",
+  "artifacts_url":"http://192.168.1.10:30881/job/devsecops/job/master/15/artifact/preview-report/",
+  "status":       "pending_approval"
+}

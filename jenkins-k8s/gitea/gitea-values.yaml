@@ -1,0 +1,51 @@
+gitea:
+  admin:
+    username: admin
+    password: "admin123"
+    email: "admin@pulse.local"
+
+  config:
+    database:
+      DB_TYPE: sqlite3
+      PATH: /data/gitea/gitea.db
+    server:
+      ROOT_URL: "http://100.89.50.27:30300/"
+      HTTP_PORT: 3000
+    service:
+      DISABLE_REGISTRATION: true
+    repository:
+      DEFAULT_BRANCH: master
+
+service:
+  http:
+    type: NodePort
+    port: 3000
+    nodePort: 30300
+
+persistence:
+  enabled: true
+  storageClass: "nfs-client"
+  size: "5Gi"
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+# Use embedded SQLite — no external DB needed
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+# Disable unused components
+memcached:
+  enabled: false

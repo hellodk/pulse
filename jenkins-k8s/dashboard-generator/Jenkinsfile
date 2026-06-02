@@ -1,0 +1,98 @@
+/* ============================================================
+   Pulse CI — Static Dashboard Generator
+   Runs every 5 minutes, queries Jenkins API server-side,
+   produces a zero-JavaScript HTML snapshot → userContent.
+   No credentials are written into the generated HTML.
+   ============================================================ */
+
+pipeline {
+    agent any
+
+    triggers {
+        cron('H/5 * * * *')
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
+    }
+
+    parameters {
+        string(
+            name: 'JENKINS_URL',
+            defaultValue: 'http://100.89.50.27:30881',
+            description: 'Jenkins base URL'
+        )
+        string(
+            name: 'REFRESH_SECONDS',
+            defaultValue: '300',
+            description: 'Browser meta-refresh interval (seconds)'
+        )
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git url: 'http://100.89.50.27:30300/dk/pulse', branch: 'master'
+            }
+        }
+
+        stage('Generate') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'jenkins-admin-creds',
+                    usernameVariable: 'JENKINS_USER',
+                    passwordVariable: 'JENKINS_PASS'
+                )]) {
+                    sh """
+                        python3 jenkins-k8s/dashboard-generator/generate_dashboard.py \
+                            --jenkins-url  "${params.JENKINS_URL}" \
+                            --user         "\${JENKINS_USER}" \
+                            --password     "\${JENKINS_PASS}" \
+                            --output       dashboard.html \
+                            --refresh      "${params.REFRESH_SECONDS}"
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to userContent') {
+            steps {
+                sh '''
+                    POD=$(kubectl get pods -n utilities \
+                        --field-selector=status.phase=Running \
+                        -o jsonpath='{.items[?(@.metadata.labels.app=="jenkins-c")].metadata.name}' \
+                        2>/dev/null || true)
+
+                    # Fallback: match by name pattern
+                    if [ -z "$POD" ]; then
+                        POD=$(kubectl get pods -n utilities --no-headers \
+                              | grep "^jenkins-c" | grep "Running" | head -1 | awk "{print \$1}")
+                    fi
+
+                    if [ -n "$POD" ]; then
+                        kubectl cp dashboard.html "utilities/${POD}:/var/jenkins_home/userContent/dashboard.html"
+                        echo "Deployed to pod: $POD"
+                    else
+                        echo "[WARN] jenkins-c pod not found — skipping kubectl cp"
+                    fi
+                '''
+            }
+        }
+
+        stage('Archive') {
+            steps {
+                archiveArtifacts artifacts: 'dashboard.html', fingerprint: false
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Dashboard generation failed — previous version remains in userContent."
+        }
+    }
+}

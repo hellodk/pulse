@@ -1,0 +1,78 @@
+## RetroRampage — iOS Swift build config
+## Used by jenkins-k8s/generic/ios/Jenkinsfile
+
+app:
+  name: RetroRampage
+  repo_url: https://github.com/nicklockwood/RetroRampage.git
+  branch: master
+
+agent:
+  label: ios-agent
+
+build:
+  type: swift                 # swift | react-native | fastlane
+  # project auto-detected via find . -name "*.xcodeproj"
+  configuration: Release
+  simulator: "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest"
+
+signing:
+  mode: skip
+
+sast:
+  swiftlint: true
+  semgrep: true
+
+upload:
+  nexus:
+    enabled: false
+    credential_id: nexus-creds
+    url: http://nexus.utilities.svc.cluster.local:8081/repository/ios-releases
+  jfrog:
+    enabled: false
+    credential_id: jfrog-creds
+    url: http://100.89.50.27:30082/artifactory/example-repo-local
+
+## ── Version ──────────────────────────────────────────────────────────────────
+## Final version = base + BUILD_NUMBER:
+##   iOS  → CFBundleShortVersionString: 1.2.47  CFBundleVersion: 47
+##   Android → versionName: 1.2.47  versionCode: 47
+##   Flutter → pubspec.yaml version: 1.2.47+47
+version:
+  base: "1.0"           # major.minor — you own this; patch = BUILD_NUMBER
+
+## ── Distribution ─────────────────────────────────────────────────────────────
+distribution:
+
+  rasping:
+    enabled: false
+    ## Internal tool endpoint — replace with your org's URL
+    endpoint: https://rasping.internal/api/v1/upload
+    ## Jenkins Secret Text credential ID containing the API key/token
+    api_key_credential_id: rasping-api-key
+    ## Sent as X-Target-Group header and form field
+    target_group: qa
+    ## Supports ${BUILD_NUMBER}, ${APP_VERSION}, ${APP_NAME} substitution at runtime
+    release_notes: "Build ${BUILD_NUMBER} — ${APP_NAME} ${APP_VERSION}"
+
+  headspin:
+    enabled: false
+    ## Jenkins Secret Text credential ID containing the HeadSpin API token
+    api_token_credential_id: headspin-api-token
+    ## HeadSpin project ID (from console.headspin.io → Settings → Projects)
+    project_id: ""
+    ## Device ID to run a test session against. Leave empty to upload-only.
+    device_id: ""
+    ## Timeout in seconds to wait for session to start (0 = fire-and-forget)
+    session_timeout: 0
+
+  firebase:
+    enabled: false
+    ## Firebase App ID — from Firebase console → Project Settings → Your Apps
+    app_id: ""
+    ## Jenkins Secret File credential ID — service account JSON (roles: Firebase App Distribution Admin)
+    credential_id: firebase-service-account
+    ## Comma-separated tester group aliases defined in Firebase console
+    groups: "qa-team"
+    release_notes: "Build ${BUILD_NUMBER} — ${APP_NAME} ${APP_VERSION}"
+    ## iOS only: upload .dSYM to Crashlytics for crash symbolication
+    crashlytics_dsym: false
