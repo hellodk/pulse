@@ -180,6 +180,7 @@ th{background:#f8f9fa;font-weight:600;color:#555;font-size:12px;}
 // ── Pipeline ───────────────────────────────────────────────────
 
 pipeline {
+    // Default agent: Mac Mini. Upload Profiles stage overrides to built-in (controller).
     agent { label 'ios-agent' }
 
     options {
@@ -190,9 +191,9 @@ pipeline {
     }
 
     parameters {
-        base64File(
+        file(
             name: 'PROFILES_ZIP',
-            description: 'ZIP file containing one or more .mobileprovision files'
+            description: 'ZIP file containing one or more .mobileprovision files (uploaded via the Jenkins UI file picker)'
         )
         string(
             name: 'NOTIFY_EMAIL',
@@ -221,25 +222,45 @@ pipeline {
         EXTRACT_DIR  = "${WORKSPACE}/extracted"
         REPORT_DIR   = "${WORKSPACE}/reports"
         BACKUP_DIR   = "${WORKSPACE}/backups"
-        INSTALL_DIR  = "${HOME}/Library/MobileDevice/Provisioning Profiles"
-        SCRIPTS_DIR  = "${WORKSPACE}/jenkins-k8s/ios/provisioning/scripts"
+        SCRIPTS_DIR  = "${WORKSPACE}/scripts"
     }
 
     stages {
 
-        stage('Checkout') {
+        /* ── Stage 1: runs on controller — saves uploaded ZIP to userContent ── */
+        stage('Upload Profiles') {
+            agent { label 'built-in' }
             steps {
-                git url: 'http://100.89.50.27:30300/dk/pulse', branch: 'master'
+                script {
+                    def zipPath = "${env.WORKSPACE}/PROFILES_ZIP"
+                    if (!fileExists(zipPath)) {
+                        // Try the parameter name directly
+                        zipPath = env.PROFILES_ZIP ?: ''
+                    }
+                    if (zipPath && fileExists(zipPath)) {
+                        sh "cp '${zipPath}' /var/jenkins_home/userContent/uploads/profiles.zip"
+                        echo "[Upload] Saved ${zipPath} to userContent/uploads/profiles.zip"
+                    } else {
+                        echo "[Upload] No file uploaded — will use existing userContent/uploads/profiles.zip"
+                    }
+                }
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
         }
 
+        /* ── Stage 2+: run on Mac Mini ios-agent ────────────────────────── */
         stage('Prepare') {
             steps {
                 sh '''
-                    rm -rf "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
-                    mkdir -p "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR"
-                    chmod +x "$SCRIPTS_DIR/"*.sh "$SCRIPTS_DIR/"*.py 2>/dev/null || true
+                    set -e
+                    rm -rf "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR" "$SCRIPTS_DIR"
+                    mkdir -p "$PROFILE_DIR" "$EXTRACT_DIR" "$REPORT_DIR" "$BACKUP_DIR" "$SCRIPTS_DIR"
+                    UC="http://100.89.50.27:30881/userContent/shared/jenkins-k8s/ios/provisioning/scripts"
+                    for SCRIPT in parse_profiles.py install_profiles.sh validate_profiles.sh; do
+                        curl -sf --max-time 15 "$UC/$SCRIPT" -o "$SCRIPTS_DIR/$SCRIPT"
+                        echo "Fetched $SCRIPT"
+                    done
+                    chmod +x "$SCRIPTS_DIR/"*.sh "$SCRIPTS_DIR/"*.py
                 '''
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
@@ -247,19 +268,21 @@ pipeline {
 
         stage('Extract ZIP') {
             steps {
-                withFileParameter('PROFILES_ZIP') {
-                    sh '''
-                        cp "$PROFILES_ZIP" "$EXTRACT_DIR/upload.zip"
-                        unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
-                        find "$EXTRACT_DIR" -name "*.mobileprovision" -exec cp {} "$PROFILE_DIR/" \;
-                        COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
-                        echo "Extracted $COUNT provisioning profile(s) from ZIP"
-                        if [ "$COUNT" -eq 0 ]; then
-                            echo "ERROR: No .mobileprovision files found in the uploaded ZIP."
-                            exit 1
-                        fi
-                    '''
-                }
+                sh '''
+                    ZIP_URL="${PROFILES_ZIP_URL:-http://100.89.50.27:30881/userContent/uploads/profiles.zip}"
+                    echo "Downloading profiles ZIP from ${ZIP_URL}"
+                    curl -sf --max-time 60 "${ZIP_URL}" -o "$EXTRACT_DIR/upload.zip" \
+                      || { echo "ERROR: failed to download from ${ZIP_URL}"; exit 1; }
+                    echo "Downloaded $(wc -c < $EXTRACT_DIR/upload.zip) bytes"
+                    unzip -o "$EXTRACT_DIR/upload.zip" -d "$EXTRACT_DIR"
+                    find "$EXTRACT_DIR" -name "*.mobileprovision" | while IFS= read -r f; do cp "$f" "$PROFILE_DIR/"; done
+                    COUNT=$(find "$PROFILE_DIR" -name "*.mobileprovision" | wc -l | tr -d ' ')
+                    echo "Extracted $COUNT provisioning profile(s) from ZIP"
+                    if [ "$COUNT" -eq 0 ]; then
+                        echo "ERROR: No .mobileprovision files found in the uploaded ZIP."
+                        exit 1
+                    fi
+                '''
             }
             post { failure { script { env.FAILED_STAGE = env.STAGE_NAME } } }
         }
@@ -267,9 +290,10 @@ pipeline {
         stage('Parse Profiles') {
             steps {
                 sh '''
+                    AGENT_HOME=$(python3 -c "import os; print(os.path.expanduser('~'))")
                     python3 "$SCRIPTS_DIR/parse_profiles.py" \
                         --profile-dir "$PROFILE_DIR" \
-                        --install-dir "$INSTALL_DIR" \
+                        --install-dir "$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
                         --output     "$REPORT_DIR/profiles.json"
                     echo "--- profiles.json ---"
                     cat "$REPORT_DIR/profiles.json"
@@ -329,9 +353,10 @@ pipeline {
             when { expression { !params.DRY_RUN } }
             steps {
                 sh '''
+                    AGENT_HOME=$(python3 -c "import os; print(os.path.expanduser('~'))")
                     "$SCRIPTS_DIR/install_profiles.sh" \
                         "$PROFILE_DIR" \
-                        "$INSTALL_DIR" \
+                        "$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
                         "$BACKUP_DIR" \
                         "${REPLACE_EXISTING}"
                 '''
@@ -345,10 +370,11 @@ pipeline {
                     def dryFlag = params.DRY_RUN ? 'DRY_RUN=true' : ''
                     sh """
                         ${dryFlag}
-                        "$SCRIPTS_DIR/validate_profiles.sh" \
-                            "$PROFILE_DIR" \
-                            "$INSTALL_DIR" \
-                            "$REPORT_DIR/validation.json"
+                        AGENT_HOME=\$(python3 -c "import os; print(os.path.expanduser('~'))")
+                        "\$SCRIPTS_DIR/validate_profiles.sh" \
+                            "\$PROFILE_DIR" \
+                            "\$AGENT_HOME/Library/MobileDevice/Provisioning Profiles" \
+                            "\$REPORT_DIR/validation.json"
                     """
                 }
             }
@@ -387,30 +413,8 @@ pipeline {
 
         failure {
             script {
-                // Auto-rollback: restore any backups that were made before the failure
-                sh '''
-                    BACKUPS=$(find "$BACKUP_DIR" -name "*.mobileprovision.bak" 2>/dev/null | wc -l | tr -d ' ')
-                    if [ "$BACKUPS" -gt 0 ]; then
-                        echo "⏪ Rolling back $BACKUPS profile(s) from backup..."
-                        for bak in "$BACKUP_DIR"/*.mobileprovision.bak; do
-                            UUID=$(basename "$bak" .mobileprovision.bak)
-                            cp "$bak" "$INSTALL_DIR/$UUID.mobileprovision"
-                            echo "  Restored: $UUID"
-                        done
-                        echo "Rollback complete."
-                    else
-                        echo "No backups found — nothing to roll back."
-                    fi
-                '''
-
-                def profiles = []
-                try {
-                    profiles = new groovy.json.JsonSlurperClassic()
-                        .parseText(readFile("${REPORT_DIR}/profiles.json"))
-                } catch (ignored) {}
-
                 def body = buildEmailBody(
-                    'FAILURE', profiles, [],
+                    'FAILURE', [], [],
                     params.DRY_RUN, params.REPLACE_EXISTING,
                     currentBuild.durationString ?: 'N/A'
                 )
@@ -421,10 +425,6 @@ pipeline {
                     body: body
                 )
             }
-        }
-
-        cleanup {
-            sh 'rm -rf "$EXTRACT_DIR" || true'
         }
     }
 }

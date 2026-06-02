@@ -16,13 +16,19 @@ import plistlib
 import subprocess
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 
 def decode_profile(path: str) -> bytes:
     result = subprocess.run(
-        ["security", "cms", "-D", "-i", path],
+        ["openssl", "smime", "-inform", "DER", "-verify", "-noverify", "-in", str(path)],
         capture_output=True,
     )
+    if result.returncode != 0:
+        result = subprocess.run(
+            ["security", "cms", "-D", "-i", str(path)],
+            capture_output=True,
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode(errors="replace").strip())
     return result.stdout
@@ -39,7 +45,7 @@ def distribution_type(plist: dict) -> str:
     return "AppStore"
 
 
-def days_left(expiry) -> int | None:
+def days_left(expiry) -> Optional[int]:
     if expiry is None:
         return None
     if not hasattr(expiry, "tzinfo") or expiry.tzinfo is None:

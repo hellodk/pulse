@@ -523,11 +523,17 @@ echo "=== Done ==="
                                 mkdir -p reports
                                 JEST_BIN="node_modules/.bin/jest"
                                 if [ -f "$JEST_BIN" ]; then
-                                    # Install jest-junit reporter if not already present
-                                    [ -d node_modules/jest-junit ] || npm install --no-save jest-junit 2>/dev/null || true
-                                    $JEST_BIN --ci \
-                                        --reporters=default --reporters=jest-junit \
-                                        --outputFile=reports/jest-results.xml 2>&1 || true
+                                    # Run jest with JSON output (no extra reporter package needed)
+                                    $JEST_BIN --ci --json \
+                                        --outputFile=reports/jest-results.json 2>/dev/null || true
+                                    # Convert jest JSON → JUnit XML for Jenkins Test Result Trend
+                                    if [ -f reports/jest-results.json ]; then
+                                        [ -f /tmp/jest2junit.py ] \
+                                          || curl -sf "http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/jest2junit.py" \
+                                                  -o /tmp/jest2junit.py 2>/dev/null || true
+                                        python3 /tmp/jest2junit.py \
+                                            reports/jest-results.json reports/jest-results.xml 2>&1 || true
+                                    fi
                                 else
                                     echo "SKIP: jest not available (node_modules not installed)"
                                 fi
