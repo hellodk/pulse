@@ -20,17 +20,24 @@
 
 def readConfig(cfgPath) {
     def cfgJson = "${env.WORKSPACE}/.cfg_${env.BUILD_NUMBER}.json"
+    // controller-agnostic fallbacks: agents on different hosts resolve the
+    // config from (1) the laptop's absolute path, (2) $HOME clone, or
+    // (3) their OWN controller's userContent — never a hardcoded controller
     withEnv(["RC_CFG=${cfgPath}",
              "RC_DEST=${cfgJson}",
              "RC_ABS=/home/dk/Documents/git/pulse/${cfgPath}",
-             "RC_UC=http://100.89.50.27:30881/userContent/shared/${cfgPath}",
-             "RC_PARSER=http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
+             "RC_HOME=${cfgPath}",
+             "RC_UC=${env.JENKINS_URL}userContent/shared/${cfgPath}",
+             "RC_PARSER_URL=${env.JENKINS_URL}userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
         sh '''#!/bin/bash
 set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 if [ -f "${RC_ABS}" ]; then
     echo "[readConfig] absolute: ${RC_ABS}"
     SRC="${RC_ABS}"
+elif [ -f "${HOME}/Documents/git/pulse/${RC_HOME}" ]; then
+    echo "[readConfig] home clone: ${HOME}/Documents/git/pulse/${RC_HOME}"
+    SRC="${HOME}/Documents/git/pulse/${RC_HOME}"
 else
     echo "[readConfig] curl: ${RC_UC}"
     TMP=$(mktemp /tmp/cfg_XXXXXX.yaml)
@@ -39,11 +46,15 @@ else
 fi
 echo "[readConfig] size=$(wc -c < "${SRC}") bytes"
 PARSER_LOCAL="/var/jenkins_home/userContent/shared/jenkins-k8s/shared/parse-config.py"
+PARSER_HOME="${HOME}/Documents/git/pulse/jenkins-k8s/shared/parse-config.py"
+if [ -f "${PARSER_HOME}" ]; then
+    PARSER_LOCAL="${PARSER_HOME}"
+fi
 if [ -f "${PARSER_LOCAL}" ]; then
     python3 "${PARSER_LOCAL}" "${SRC}" > "${RC_DEST}" 2>/dev/null \
       || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
 else
-    curl -sf --max-time 15 "${RC_PARSER}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
+    curl -sf --max-time 15 "${RC_PARSER_URL}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
       || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
 fi
 echo "[readConfig] result: $(cat "${RC_DEST}" | head -c 120)"

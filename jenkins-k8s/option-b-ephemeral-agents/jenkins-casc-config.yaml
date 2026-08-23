@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: jenkins-b-casc
   namespace: utilities
+  labels:
+    app: jenkins-b
 data:
   jenkins.yaml: |
     jenkins:
@@ -14,10 +16,15 @@ data:
           allowsSignup: false
           users:
             - id: "admin"
-              password: "admin123"
+              password: "${ADMIN_PASSWORD}"
       authorizationStrategy:
         loggedInUsersCanDoAnything:
           allowAnonymousRead: false
+
+      # NOTE (issue #2): this ConfigMap is reverted at every controller boot by
+      # an unidentified writer. Nodes are therefore NOT declared here — the
+      # ios-m4 agent is created via REST API and persists in the jenkins-b-home
+      # PVC. Saved copy: option-b-ephemeral-agents/nodes/ios-m4.xml
 
       clouds:
         - kubernetes:
@@ -57,13 +64,13 @@ data:
               - usernamePassword:
                   id: "nexus-creds"
                   scope: GLOBAL
-                  username: "admin"
-                  password: "admin123"
+                  username: "${NEXUS_USERNAME}"
+                  password: "${NEXUS_PASSWORD}"
                   description: "Nexus Repository OSS credentials"
               - string:
                   id: "sonar-token"
                   scope: GLOBAL
-                  secret: "sqa_cfe7995abde81c39e8943c221fb238fb18654b90"
+                  secret: "${SONAR_TOKEN}"
                   description: "SonarQube authentication token"
 
     unclassified:
@@ -81,7 +88,7 @@ data:
 
       extendedEmailPublisher:
         defaultContentType: "text/html"
-        defaultRecipients: "reject@hellodk.io"
+        defaultRecipients: "hello.dk@outlook.com"
         defaultSubject: "Jenkins Build Notification"
         mailAccount:
           smtpHost: "smtp.utilities.svc.cluster.local"

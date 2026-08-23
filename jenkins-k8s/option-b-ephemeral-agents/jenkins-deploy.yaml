@@ -41,6 +41,9 @@ spec:
           mountPath: /var/jenkins_casc
         - name: email-templates
           mountPath: /var/jenkins_home/email-templates
+        - name: git-repo
+          mountPath: /home/dk/Documents/git/pulse
+          readOnly: true
         resources:
           requests:
             memory: "1Gi"
@@ -70,6 +73,10 @@ spec:
       - name: email-templates
         configMap:
           name: jenkins-email-templates
+      - name: git-repo
+        hostPath:
+          path: /home/dk/Documents/git/pulse
+          type: Directory
 ---
 apiVersion: v1
 kind: Service
