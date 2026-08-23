@@ -21,28 +21,34 @@
 def readConfig(cfgPath) {
     def cfgJson = "${env.WORKSPACE}/.cfg_${env.BUILD_NUMBER}.json"
     // controller-agnostic fallbacks: agents on different hosts resolve the
-    // config from (1) the laptop's absolute path, (2) $HOME clone, or
-    // (3) their OWN controller's userContent — never a hardcoded controller
+    // config from (1) the laptop's absolute path, (2) \$HOME clone, (3) the
+    // known Mac mini path, or (4) their OWN controller's userContent
     withEnv(["RC_CFG=${cfgPath}",
              "RC_DEST=${cfgJson}",
              "RC_ABS=/home/dk/Documents/git/pulse/${cfgPath}",
              "RC_HOME=${cfgPath}",
-             "RC_UC=${env.JENKINS_URL}userContent/shared/${cfgPath}",
-             "RC_PARSER_URL=${env.JENKINS_URL}userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
+             "RC_UC=${env.JENKINS_URL ?: 'http://192.168.1.10:30880/'}userContent/shared/${cfgPath}",
+             "RC_PARSER_URL=${env.JENKINS_URL ?: 'http://192.168.1.10:30880/'}userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
         sh '''#!/bin/bash
 set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 if [ -f "${RC_ABS}" ]; then
     echo "[readConfig] absolute: ${RC_ABS}"
     SRC="${RC_ABS}"
-elif [ -f "${HOME}/Documents/git/pulse/${RC_HOME}" ]; then
+elif [ -n "${HOME}" ] && [ -f "${HOME}/Documents/git/pulse/${RC_HOME}" ]; then
     echo "[readConfig] home clone: ${HOME}/Documents/git/pulse/${RC_HOME}"
     SRC="${HOME}/Documents/git/pulse/${RC_HOME}"
+elif [ -f "/Users/dk/Documents/git/pulse/${RC_HOME}" ]; then
+    echo "[readConfig] mac mini clone"
+    SRC="/Users/dk/Documents/git/pulse/${RC_HOME}"
 else
     echo "[readConfig] curl: ${RC_UC}"
-    TMP=$(mktemp /tmp/cfg_XXXXXX.yaml)
+    # Xs MUST terminate the template on macOS or mktemp creates a literal file
+    TMP=$(mktemp /tmp/cfg_XXXXXX)
+    mv "${TMP}" "${TMP}.yaml"
+    TMP="${TMP}.yaml"
     curl -sf --max-time 15 "${RC_UC}" -o "${TMP}" 2>/dev/null
-    if [ -s "${TMP}" ]; then SRC="${TMP}"; else echo '{}' > "${RC_DEST}"; exit 0; fi
+    if [ -s "${TMP}" ]; then SRC="${TMP}"; else rm -f "${TMP}"; echo '{}' > "${RC_DEST}"; exit 0; fi
 fi
 echo "[readConfig] size=$(wc -c < "${SRC}") bytes"
 PARSER_LOCAL="/var/jenkins_home/userContent/shared/jenkins-k8s/shared/parse-config.py"
