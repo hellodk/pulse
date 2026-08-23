@@ -173,7 +173,7 @@ pipeline {
         )
         string(
             name: 'AGENT_LABEL',
-            defaultValue: 'ios-agent',
+            defaultValue: 'ios-m4',
             description: 'Jenkins agent label (overrides config file value if set)'
         )
         string(name: 'NOTIFY_EMAIL',  defaultValue: 'reject@hellodk.io', description: 'Comma-separated email recipients')

@@ -407,10 +407,13 @@ cmd_job() {
             esac
             ;;
         build)
-            jenkins_api POST "/job/$job/build" && ok "build queued for '$job'" \
-                || { log "params not yet materialized — using buildWithParameters"; \
-                     jenkins_api POST "/job/$job/buildWithParameters" \
-                     && ok "parameterized build queued" || err "trigger failed"; }
+            # pass params explicitly — the Jenkinsfile's inline defaults get
+            # re-materialized on every run and don't know this repo's agents
+            jenkins_api POST "/job/$job/buildWithParameters" \
+                --data-urlencode "APP_CONFIG=jenkins-k8s/apps/retrorampage/build-config.yaml" \
+                --data-urlencode "AGENT_LABEL=${AGENT_LABEL:-ios-m4}" \
+                && ok "build queued for '$job' (APP_CONFIG+AGENT_LABEL explicit)" \
+                || err "trigger failed"
             ;;
         console)
             jenkins_api GET "/job/$job/lastBuild/logText/progressiveText?start=0" | tail -40
