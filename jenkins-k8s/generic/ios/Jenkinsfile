@@ -32,9 +32,12 @@ def readConfig(cfgPath) {
         sh '''#!/bin/bash
 set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
-echo "[readConfig] debug: HOME='${HOME}' RC_HOME='${RC_HOME}' pwd=$(pwd)"
-ls -la "${HOME}/Documents/git/pulse/${RC_HOME}" 2>&1 | head -1
-if [ -f "${RC_ABS}" ]; then
+# 1) inline config passed as a build parameter — immune to agent-side
+#    filesystem surprises (iCloud evicts files under ~/Documents)
+if [ -n "${CONFIG_YAML:-}" ]; then
+    echo "[readConfig] from CONFIG_YAML parameter ($(printf '%s' "${CONFIG_YAML}" | wc -c) bytes)"
+    printf '%s' "${CONFIG_YAML}" > "${RC_DEST}"
+elif [ -f "${RC_ABS}" ]; then
     echo "[readConfig] absolute: ${RC_ABS}"
     SRC="${RC_ABS}"
 elif [ -n "${HOME}" ] && [ -f "${HOME}/Documents/git/pulse/${RC_HOME}" ]; then
@@ -183,6 +186,11 @@ pipeline {
             name: 'AGENT_LABEL',
             defaultValue: 'ios-m4',
             description: 'Jenkins agent label (overrides config file value if set)'
+        )
+        text(
+            name: 'CONFIG_YAML',
+            defaultValue: '',
+            description: 'Full build-config.yaml content; when set it wins over APP_CONFIG file resolution'
         )
         string(name: 'NOTIFY_EMAIL',  defaultValue: 'reject@hellodk.io', description: 'Comma-separated email recipients')
         string(name: 'LLM_ENDPOINT_A', defaultValue: 'http://100.89.50.27:11434', description: 'Primary Ollama endpoint')

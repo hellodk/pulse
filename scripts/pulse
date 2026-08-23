@@ -408,11 +408,16 @@ cmd_job() {
             ;;
         build)
             # pass params explicitly — the Jenkinsfile's inline defaults get
-            # re-materialized on every run and don't know this repo's agents
+            # re-materialized on every run and don't know this repo's agents;
+            # CONFIG_YAML inlines the config so agent-side fs quirks
+            # (iCloud eviction on the mini) can't empty it
+            local cfgfile="$JK/apps/retrorampage/build-config.yaml"
+            [[ -f "$cfgfile" ]] || err "missing $cfgfile"
             jenkins_api POST "/job/$job/buildWithParameters" \
                 --data-urlencode "APP_CONFIG=jenkins-k8s/apps/retrorampage/build-config.yaml" \
                 --data-urlencode "AGENT_LABEL=${AGENT_LABEL:-ios-m4}" \
-                && ok "build queued for '$job' (APP_CONFIG+AGENT_LABEL explicit)" \
+                --data-urlencode "CONFIG_YAML@${cfgfile}" \
+                && ok "build queued for '$job' (config inlined)" \
                 || err "trigger failed"
             ;;
         console)

@@ -10,11 +10,18 @@
           <defaultValue>jenkins-k8s/apps/retrorampage/build-config.yaml</defaultValue>
           <description>Path to build-config.yaml relative to the pulse repo root</description>
         </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>AGENT_LABEL</name>
-          <defaultValue>ios-m4</defaultValue>
-          <description>Jenkins agent label - Mac mini M4 connected to jenkins-b</description>
-        </hudson.model.StringParameterDefinition>
+      <hudson.model.StringParameterDefinition>
+        <name>AGENT_LABEL</name>
+        <defaultValue>ios-m4</defaultValue>
+        <description>Jenkins agent label - Mac mini M4 connected to jenkins-b</description>
+        <trim>false</trim>
+      </hudson.model.StringParameterDefinition>
+      <hudson.model.StringParameterDefinition>
+        <name>CONFIG_YAML</name>
+        <defaultValue></defaultValue>
+        <description>Full build-config.yaml content; wins over APP_CONFIG file resolution</description>
+        <trim>false</trim>
+      </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>NOTIFY_EMAIL</name>
           <defaultValue>hello.dk@outlook.com</defaultValue>
