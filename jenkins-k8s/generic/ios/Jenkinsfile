@@ -34,9 +34,13 @@ set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 # 1) inline config passed as a build parameter — immune to agent-side
 #    filesystem surprises (iCloud evicts files under ~/Documents)
+#    written to a temp file so the normal parse path can run on it
 if [ -n "${CONFIG_YAML:-}" ]; then
-    echo "[readConfig] from CONFIG_YAML parameter ($(printf '%s' "${CONFIG_YAML}" | wc -c) bytes)"
-    printf '%s' "${CONFIG_YAML}" > "${RC_DEST}"
+    TMP=$(mktemp /tmp/cfg_XXXXXX)
+    mv "${TMP}" "${TMP}.yaml"
+    printf '%s' "${CONFIG_YAML}" > "${TMP}.yaml"
+    SRC="${TMP}.yaml"
+    echo "[readConfig] from CONFIG_YAML parameter ($(wc -c < "${SRC}") bytes)"
 elif [ -f "${RC_ABS}" ]; then
     echo "[readConfig] absolute: ${RC_ABS}"
     SRC="${RC_ABS}"
