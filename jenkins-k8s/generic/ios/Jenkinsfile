@@ -501,10 +501,12 @@ echo "=== Done ==="
                                 xcodebuild archive \\
                                     -workspace "\${WORKSPACE_XC}" \\
                                     -scheme    "\${SCHEME}" \\
+                                    -destination 'generic/platform=iOS' \\
                                     -configuration "\${CONFIGURATION}" \\
                                     -archivePath "build/\${APP_NAME}.xcarchive" \\
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
@@ -527,10 +529,12 @@ echo "=== Done ==="
                                 xcodebuild archive \\
                                     -project "\$PROJECT" \\
                                     -scheme  "\$SCHEME_AUTO" \\
+                                    -destination 'generic/platform=iOS' \\
                                     -configuration "\${CONFIGURATION}" \\
                                     -archivePath "build/\${APP_NAME}.xcarchive" \\
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
