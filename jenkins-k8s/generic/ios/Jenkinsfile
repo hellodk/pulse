@@ -434,10 +434,12 @@ echo "=== Done ==="
                             CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
                             security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT}
 
-                            # Read the actual identity CN from the keychain so xcodebuild gets the
-                            # exact string — required for CODE_SIGN_IDENTITY on Xcode 26 manual signing.
-                            IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
-                                | grep '"' | head -1 | sed 's/.*"\\(.*\\)"/\\1/')
+                            # Resolve the signing identity by SHA-1 hash —
+                            # self-signed dummy CAs are never trusted by the
+                            # system, so `-v` lists zero identities and CN
+                            # extraction fails. A hash works for signing.
+                            IDENTITY=$(security find-identity -p codesigning "${KEYCHAIN_NAME}" \
+                                | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
                             echo "${KEYCHAIN_NAME}" >  /tmp/ios_keychain_${BUILD_NUMBER}.txt
                             echo "${KEYCHAIN_PASS}"  >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
                             echo "${IDENTITY}"        >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
