@@ -473,26 +473,10 @@ echo "=== Done ==="
                 dir('app-src') {
                     script {
                         def signFlags = 'CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO'
-                        if (env.SIGN_MODE == 'real') {
-                            def keychainLines = readFile("/tmp/ios_keychain_${BUILD_NUMBER}.txt").trim().split('\n')
-                            def keychainName  = keychainLines[0]
-                            def keychainPass  = keychainLines[1]
-                            def identity      = keychainLines.size() > 2 ? keychainLines[2] : ''
-                            // Xcode 26 / macOS Tahoe requirements:
-                            // 1. CODE_SIGN_IDENTITY must be the exact string from the keychain
-                            // 2. PROVISIONING_PROFILE_SPECIFIER selects which profile to use (manual signing)
-                            // 3. --timestamp=none prevents xcodebuild calling Apple timestamp servers in CI
-                            //    (avoids hangs when signing keys are not from Apple's CA)
-                            // 4. --keychain must be the full path (Tahoe changed resolution order)
-                            def keychainPath = sh(script: "security find-keychain '${keychainName}' | tr -d '\\\"'",
-                                                   returnStdout: true).trim() ?: keychainName
-                            signFlags = """DEVELOPMENT_TEAM="${env.SIGN_TEAM}" \\
-                                CODE_SIGN_STYLE=Manual \\
-                                CODE_SIGN_IDENTITY="${identity}" \\
-                                PROVISIONING_PROFILE_SPECIFIER="${env.SIGN_PROF_ID ?: ''}" \\
-                                PRODUCT_BUNDLE_IDENTIFIER="${env.BUNDLE_ID ?: ''}" \\
-                                OTHER_CODE_SIGN_FLAGS="--keychain '${keychainPath}' --timestamp=none" """
-                        }
+                        // NOTE: xcodebuild archive rejects self-signed/untrusted
+                        // identities outright ("not valid for code signing"), so
+                        // archiving happens UNSIGNED above and the dummy signature
+                        // is applied explicitly right after the archive lands.
 
                         if (env.BUILD_TYPE == 'react-native') {
                             sh """#!/bin/bash
@@ -507,6 +491,15 @@ echo "=== Done ==="
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
                                 [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
+                                if [ "\${SIGN_MODE}" = "real" ]; then
+                                    KCF="/tmp/ios_keychain_\${BUILD_NUMBER}.txt"
+                                    KC=\$(sed -n 1p "\$KCF"); KCP=\$(sed -n 2p "\$KCF"); IDENT=\$(sed -n 3p "\$KCF")
+                                    security unlock-keychain -p "\$KCP" "\$KC" || true
+                                    APP_BUNDLE=\$(find "build/\${APP_NAME}.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+                                    codesign --force --sign "\$IDENT" --keychain "\$KC" --timestamp=none "\$APP_BUNDLE"
+                                    echo "--- codesign verify ---"
+                                    codesign -dv "\$APP_BUNDLE" 2>&1 | head -5
+                                fi
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
@@ -535,6 +528,15 @@ echo "=== Done ==="
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
                                 [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
+                                if [ "\${SIGN_MODE}" = "real" ]; then
+                                    KCF="/tmp/ios_keychain_\${BUILD_NUMBER}.txt"
+                                    KC=\$(sed -n 1p "\$KCF"); KCP=\$(sed -n 2p "\$KCF"); IDENT=\$(sed -n 3p "\$KCF")
+                                    security unlock-keychain -p "\$KCP" "\$KC" || true
+                                    APP_BUNDLE=\$(find "build/\${APP_NAME}.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+                                    codesign --force --sign "\$IDENT" --keychain "\$KC" --timestamp=none "\$APP_BUNDLE"
+                                    echo "--- codesign verify ---"
+                                    codesign -dv "\$APP_BUNDLE" 2>&1 | head -5
+                                fi
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
