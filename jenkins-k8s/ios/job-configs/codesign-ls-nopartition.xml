@@ -1,0 +1,81 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Experiment: codesign /bin/ls copy WITHOUT keychain partition list (issue #4)</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.model.LogRotator">
+        <numToKeep>10</numToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script><![CDATA[node('ios-m4') {
+    timestamps {
+        timeout(time: 15, unit: 'MINUTES') {
+            stage('codesign experiment: NO keychain partition') {
+                withCredentials([file(credentialsId: 'ios-dummy-p12', variable: 'P12_FILE'),
+                                 string(credentialsId: 'ios-dummy-p12-pass', variable: 'P12_PASS')]) {
+                    sh '''#!/bin/bash
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+VARIANT="NOPARTITION"
+echo "=== codesign experiment: $VARIANT ==="
+
+KC="codesign-exp-${BUILD_NUMBER}-${VARIANT}"
+rm -f ./ls-binary-test
+
+security delete-keychain "$KC" 2>/dev/null || true
+if ! security create-keychain -p "$P12_PASS" "$KC"; then
+    echo "FAIL: create-keychain"; exit 2
+fi
+security unlock-keychain -p "$P12_PASS" "$KC"
+if ! security import "$P12_FILE" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -f pkcs12; then
+    echo "FAIL: p12 import"; exit 2
+fi
+
+echo "--- skipping set-key-partition-list (experiment variable) ---"
+
+IDENT=$(security find-identity -p codesigning "$KC" | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
+echo "identity hash: ${IDENT:-NONE}"
+[ -n "$IDENT" ] || { echo "FAIL: no identity in keychain"; security delete-keychain "$KC"; exit 2; }
+
+cp /bin/ls ./ls-binary-test
+
+RC_SIGN=99
+echo "--- codesign attempt ---"
+codesign --force --sign "$IDENT" --keychain "$KC" --timestamp=none ./ls-binary-test 2>&1 | tee codesign-output.txt
+RC_SIGN=${PIPESTATUS[0]}
+echo "codesign rc=$RC_SIGN"
+
+RC_VERIFY=99
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "--- verify ---"
+    codesign -dv ./ls-binary-test 2>&1 | head -6
+    RC_VERIFY=0
+else
+    echo "verify skipped (sign failed)"
+fi
+
+security delete-keychain "$KC" 2>/dev/null || true
+rm -f ./ls-binary-test
+
+echo ""
+echo "================ RESULT ================"
+echo "variant=$VARIANT codesign_rc=$RC_SIGN verify_rc=$RC_VERIFY"
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "VERDICT: SIGNING SUCCEEDED"
+else
+    echo "VERDICT: SIGNING FAILED (expected for this variant if partition list is required)"
+fi
+'''
+                }
+            }
+        }
+    }
+}]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <disabled>false</disabled>
+</flow-definition>
