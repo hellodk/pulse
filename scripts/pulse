@@ -1,0 +1,502 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/pulse — unified CLI for the pulse repo (issue #2 workflow + ops)
+#
+#   scripts/pulse                      interactive menu
+#   scripts/pulse test                 artifact test suite (pytest)
+#   scripts/pulse validate             bash -n + YAML lint on pipeline artifacts
+#   scripts/pulse casc diff|apply      jenkins-b JCasC configmap
+#   scripts/pulse deploy apply         jenkins-b deployment (pulse mount)
+#   scripts/pulse jenkins restart|status|wait
+#   scripts/pulse plugins install <name>
+#   scripts/pulse node list|secret <name>
+#   scripts/pulse agent install ios-m4     push agent setup to the Mac mini
+#   scripts/pulse sign generate            run dummy signing generator on Mac
+#   scripts/pulse bao proxy|put-p12 <file>|status
+#   scripts/pulse creds sync|verify
+#   scripts/pulse job create|build|log|console <job>
+#
+# All output → stderr; data → stdout. No secrets hardcoded — everything is
+# fetched from the cluster at runtime.
+# =============================================================================
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JK="$REPO_ROOT/jenkins-k8s"
+NS_UTIL="utilities"
+MAC_HOST="${MAC_HOST:-192.168.1.5}"
+MAC_USER="${MAC_USER:-dk}"
+JENKINS_B_URL="${JENKINS_B_URL:-http://192.168.1.10:30880}"
+BAO_PATH="${BAO_PATH:-secret/jenkins/ios-signing}"
+
+log()  { echo "[INFO] $*" >&2; }
+ok()   { echo "[OK]   $*" >&2; }
+err()  { echo "[ERROR] $*" >&2; exit 1; }
+
+version() {
+    if [[ -f "$REPO_ROOT/VERSION" ]]; then cat "$REPO_ROOT/VERSION"; else echo "0.0.0-dev"; fi
+}
+
+_require_cmds() {
+    local c missing=0
+    for c in "$@"; do
+        command -v "$c" >/dev/null 2>&1 || { err "missing dependency: $c"; missing=1; }
+    done
+    [[ $missing -eq 0 ]]
+}
+
+_prompt_input() {
+    local msg="$1" default="${2:-}" reply
+    read -r -p "$msg${default:+ [$default]}: " reply </dev/tty || reply=""
+    echo "${reply:-$default}"
+}
+
+prompt_confirm_word() {
+    # prompt_confirm_word "<message>" <word-to-type>
+    local reply
+    read -r -p "$1 (type '$2' to proceed): " reply </dev/tty || return 1
+    [[ "$reply" == "$2" ]]
+}
+
+# ── Jenkins auth (fetched live from cluster, never stored) ──────────────────
+jenkins_password() {
+    kubectl get secret -n "$NS_UTIL" jenkins-ci-credentials \
+        -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+}
+
+jenkins_api() {
+    # jenkins_api <method> <path> [curl-extra-args...]
+    local method="$1" path="$2"; shift 2
+    local pw jar=/tmp/opencode/.jenkins-cookies
+    mkdir -p "$(dirname "$jar")"
+    pw="$(jenkins_password)"
+    local crumb_args=()
+    if [[ "$method" == "POST" ]]; then
+        # crumb is bound to the HTTP session — reuse the same cookie jar
+        local crumb
+        crumb=$(curl -sf -c "$jar" -u "admin:$pw" "$JENKINS_B_URL/crumbIssuer/api/json" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['crumb'])")
+        crumb_args=(-b "$jar" -H "Jenkins-Crumb: $crumb")
+    fi
+    curl -sf -X "$method" -u "admin:$pw" "${crumb_args[@]}" "$@" "$JENKINS_B_URL$path"
+}
+
+# ── test / validate ──────────────────────────────────────────────────────────
+cmd_test() {
+    _require_cmds pytest
+    pytest "${JK}/tests/test_ios_pipeline_artifacts.py" -q "${@:-}"
+}
+
+cmd_validate() {
+    local f rc=0
+    for f in "$JK/shared/sync-openbao-to-jenkins.sh" \
+             "$JK/ios/agent/setup-ios-m4-agent.sh" "$REPO_ROOT/scripts/pulse"; do
+        bash -n "$f" && ok "bash -n: ${f#$REPO_ROOT/}" || rc=1
+    done
+    for f in "$JK/option-b-ephemeral-agents/jenkins-casc-config.yaml" \
+             "$JK/option-b-ephemeral-agents/jenkins-deploy.yaml" \
+             "$JK/apps/retrorampage/build-config.yaml"; do
+        python3 -c "
+import yaml, sys
+docs = list(yaml.safe_load_all(open(sys.argv[1])))
+assert docs and docs[0], 'empty document'
+" "$f" && ok "yaml ok: ${f#$REPO_ROOT/}" || rc=1
+    done
+    python3 -c "import xml.etree.ElementTree as E; E.parse('$JK/ios/job-configs/retrorampage-jenkinsb.xml')" \
+        && ok "xml ok: retrorampage-jenkinsb.xml" || rc=1
+    return $rc
+}
+
+# ── casc / deploy / jenkins lifecycle ────────────────────────────────────────
+cmd_casc() {
+    _require_cmds kubectl
+    local action="${1:-diff}"; shift || true
+    case "$action" in
+        diff)
+            kubectl get configmap jenkins-b-casc -n "$NS_UTIL" \
+                -o jsonpath='{.data.jenkins\.yaml}' > /tmp/opencode/live-casc.yaml 2>/dev/null || true
+            python3 - "$JK/option-b-ephemeral-agents/jenkins-casc-config.yaml" <<'PY'
+import sys, yaml
+want = yaml.safe_load(open(sys.argv[1]))["data"]["jenkins.yaml"]
+try:
+    have = open("/tmp/opencode/live-casc.yaml").read()
+except FileNotFoundError:
+    have = ""
+sys.exit(0 if have.strip() == want.strip() else 1)
+PY
+            ;;
+        apply)
+            kubectl apply -f "$JK/option-b-ephemeral-agents/jenkins-casc-config.yaml"
+            ;;
+        *) err "usage: casc diff|apply" ;;
+    esac
+}
+
+cmd_deploy() {
+    _require_cmds kubectl
+    case "${1:-apply}" in
+        apply) kubectl apply -f "$JK/option-b-ephemeral-agents/jenkins-deploy.yaml" ;;
+        *) err "usage: deploy apply" ;;
+    esac
+}
+
+cmd_jenkins() {
+    _require_cmds kubectl curl
+    case "${1:-status}" in
+        restart) kubectl rollout restart deploy/jenkins-b -n "$NS_UTIL" ;;
+        status)  kubectl get pods -n "$NS_UTIL" -l app=jenkins-b -o wide ;;
+        wait)    kubectl rollout status deploy/jenkins-b -n "$NS_UTIL" --timeout=300s ;;
+        *) err "usage: jenkins restart|status|wait" ;;
+    esac
+}
+
+cmd_plugins() {
+    _require_cmds kubectl curl
+    local action="${1:-install}" name="${2:-timestamper}"
+    case "$action" in
+        install)
+            log "Fetching update-center metadata for $name"
+            local url
+            url=$(curl -sfL https://updates.jenkins.io/current/update-center.actual.json \
+                | python3 -c "
+import json,sys
+p=json.load(sys.stdin)['plugins']['$name']
+print(p['url'] if p.get('url') else 'https://updates.jenkins.io/download/plugins/$name/'+p['version']+'/'+p.get('gav','').split(':')[-1])
+")
+            [[ -n "$url" ]] || err "plugin $name not found in update center"
+            log "Downloading $url"
+            curl -sfL "$url" -o "/tmp/opencode/${name}.hpi" || err "download failed"
+            local pod
+            pod=$(kubectl run "pulse-plugin-$name" -n "$NS_UTIL" --restart=Never \
+                --image=busybox:1.36.1 \
+                --overrides='{
+                "spec": {"containers": [{"name": "copy", "image": "busybox:1.36.1",
+                  "command": ["sh", "-c", "sleep 120"],
+                  "volumeMounts": [{"name": "home", "mountPath": "/target"}]}],
+                  "volumes": [{"name": "home", "persistentVolumeClaim": {"claimName": "jenkins-b-home"}}]}}' \
+                -o jsonpath='{.metadata.name}')
+            kubectl wait --for=condition=Ready pod/"$pod" -n "$NS_UTIL" --timeout=60s
+            kubectl exec -n "$NS_UTIL" "$pod" -- mkdir -p /target/plugins
+            kubectl cp "/tmp/opencode/${name}.hpi" "$NS_UTIL/$pod:/target/plugins/${name}.jpi"
+            kubectl exec -n "$NS_UTIL" "$pod" -- chown 1000:1000 "/target/plugins/${name}.jpi"
+            kubectl delete pod "$pod" -n "$NS_UTIL" --wait=true
+            ok "installed $name into PVC — run 'scripts/pulse jenkins restart' to load it"
+            ;;
+        *) err "usage: plugins install <name>" ;;
+    esac
+}
+
+# ── nodes / agents ───────────────────────────────────────────────────────────
+cmd_node() {
+    _require_cmds curl python3
+    case "${1:-list}" in
+        list)
+            jenkins_api GET "/computer/api/json?tree=computer[displayName,offline,oneOffExecutors]" \
+                | python3 -m json.tool
+            ;;
+        secret)
+            local name="${2:?node name required}"
+            jenkins_api GET "/computer/${name}/slave-agent.jnlp" \
+                | python3 -c "
+import sys, re
+text = sys.stdin.read()
+m = re.search(r'<argument>([0-9a-f]{32,})</argument>', text) \
+    or re.search(r'-secret\s+([0-9a-f]+)', text)
+print(m.group(1) if m else '')
+sys.exit(0 if m else 1)"
+            ;;
+        *) err "usage: node list|secret <name>" ;;
+    esac
+}
+
+cmd_agent() {
+    _require_cmds ssh scp curl
+    # the Mac mini's link drops roughly every other connection — retry everything
+    _retry() {
+        local n=1 max="${RETRIES:-5}" delay=4
+        until "$@"; do
+            [[ $n -ge $max ]] && return 1
+            log "attempt $n failed (${1##* }) — retrying in ${delay}s"
+            sleep $delay
+            n=$((n+1))
+        done
+    }
+    case "${1:-install}" in
+        install)
+            local name="${2:-ios-m4}"
+            log "Fetching inbound secret for node $name from jenkins-b"
+            local secret
+            secret=$(cmd_node secret "$name") || err "could not fetch agent secret (is node created?)"
+            [[ -n "$secret" ]] || err "empty secret for $name"
+            _retry scp -q -o ConnectTimeout=8 \
+                "$JK/ios/agent/setup-ios-m4-agent.sh" "$MAC_USER@$MAC_HOST:/tmp/" \
+                || err "scp to Mac failed — is $MAC_HOST reachable?"
+            _retry ssh -o ConnectTimeout=8 "$MAC_USER@$MAC_HOST" \
+                "AGENT_SECRET='$secret' chmod +x /tmp/setup-ios-m4-agent.sh && AGENT_SECRET='$secret' /tmp/setup-ios-m4-agent.sh"
+            ;;
+        *) err "usage: agent install [ios-m4]" ;;
+    esac
+}
+
+# ── signing ──────────────────────────────────────────────────────────────────
+cmd_sign() {
+    _require_cmds ssh scp curl
+    # One consolidated, retried remote run — the Mac's link flaps every few
+    # minutes, so everything must happen inside a single stable window.
+    local name="${MAC_SIGN_NAME:-YourBank Ltd}" team="${MAC_SIGN_TEAM:-DUMTEAM01}"
+    log "Running dummy-signing generator on $MAC_HOST (single window, retried)"
+    _retry() {
+        local n=1 max="${RETRIES:-6}" delay=6
+        until "$@"; do
+            [[ $n -ge $max ]] && err "Mac unreachable after $max attempts"
+            log "attempt $n failed — retrying in ${delay}s"
+            sleep $delay
+            n=$((n+1))
+        done
+    }
+    _retry scp -q -o ConnectTimeout=8 \
+        "$JK/ios/option-4-enterprise/generate-dummy-signing.sh" \
+        "$MAC_USER@$MAC_HOST:/tmp/generate-dummy-signing.sh" \
+        || err "scp failed"
+    _retry ssh -o ConnectTimeout=8 "$MAC_USER@$MAC_HOST" '
+        set -e
+        chmod +x /tmp/generate-dummy-signing.sh
+        # --generate still asks y/N + press_enter — feed them via stdin
+        cd /tmp && printf "y\n\n\n" | ./generate-dummy-signing.sh --generate 2>&1 | tail -15
+        echo "--- output dir ---"
+        ls -la /tmp/dummy-signing/ 2>/dev/null
+        security find-identity -v -p codesigning ios-banknow-dummy.keychain 2>/dev/null | head -3
+    ' || err "remote generate failed"
+    _retry scp -q -o ConnectTimeout=8 \
+        "$MAC_USER@$MAC_HOST:/tmp/dummy-signing/dist.p12" /tmp/opencode/dist.p12 \
+        || err "could not retrieve dist.p12"
+    ok "dist.p12 retrieved to /tmp/opencode/dist.p12 (password is the generator's CERT_PASS constant)"
+}
+
+# ── OpenBao ──────────────────────────────────────────────────────────────────
+bao_root_token() {
+    kubectl get secret -n openbao openbao-keys \
+        -o jsonpath='{.data.root_token}' 2>/dev/null | base64 -d \
+        || kubectl get secret -n openbao openbao-keys -o json \
+        | python3 -c "
+import json,sys,base64
+d=json.load(sys.stdin)['data']
+for k,v in d.items():
+    if 'token' in k.lower():
+        print(base64.b64decode(v).decode(errors='replace').strip()); break"
+}
+
+cmd_bao() {
+    _require_cmds kubectl curl
+    local action="${1:-status}"; shift || true
+    local pf_pid=""
+    start_proxy() {
+        # detach fully so callers (and CI) never wait on the child's pipes
+        setsid nohup kubectl port-forward -n openbao pod/openbao-0 18200:8200 \
+            >/dev/null 2>&1 < /dev/null &
+        pf_pid=$!
+        sleep 2
+    }
+    case "$action" in
+        proxy)
+            start_proxy
+            log "OpenBao at http://127.0.0.1:18200 (ctrl-c to stop)"
+            trap 'kill $pf_pid 2>/dev/null' INT TERM
+            wait $pf_pid
+            ;;
+        status)
+            start_proxy
+            curl -sf -H "X-Vault-Token: $(bao_root_token)" http://127.0.0.1:18200/v1/sys/health >/dev/null \
+                && ok "openbao reachable+unsealed" || err "openbao not reachable"
+            kill $pf_pid 2>/dev/null
+            ;;
+        put-p12)
+            local p12file="${1:?usage: bao put-p12 <dist.p12> [password]}"
+            local pass="${2:-}"
+            [[ -f "$p12file" ]] || err "file not found: $p12file"
+            [[ -n "$pass" ]] || pass="$(_prompt_input 'p12 password')"
+            start_proxy
+            local token
+            token=$(bao_root_token)
+            B64V="$(base64 -w0 "$p12file")" PASSV="$pass" python3 -c '
+import json, os
+print(json.dumps({"data": {"p12_b64": os.environ["B64V"],
+                           "p12_pass": os.environ["PASSV"]}}))
+' | curl -sf -X POST -H "X-Vault-Token: $token" \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                "http://127.0.0.1:18200/v1/${BAO_PATH}/data" >/dev/null \
+                || err "kv put failed"
+            kill $pf_pid 2>/dev/null
+            ok "stored p12+pass in OpenBao: $BAO_PATH"
+            ;;
+        *) err "usage: bao proxy|status|put-p12 <file> [pass]" ;;
+    esac
+}
+
+# ── credentials sync ─────────────────────────────────────────────────────────
+cmd_creds() {
+    _require_cmds kubectl curl
+    local action="${1:-sync}"; shift || true
+    export JENKINS_ADMIN_PASSWORD="$(jenkins_password)"
+    export JENKINS_URL="$JENKINS_B_URL"
+    case "$action" in
+        sync)
+            kubectl port-forward -n openbao pod/openbao-0 18200:8200 >/dev/null 2>&1 &
+            local pid=$!
+            sleep 2
+            export BAO_ADDR="http://127.0.0.1:18200"
+            export BAO_TOKEN="$(bao_root_token)"
+            "$JK/shared/sync-openbao-to-jenkins.sh" "$@"
+            local rc=$?
+            kill $pid 2>/dev/null || true
+            return $rc
+            ;;
+        verify)
+            export BAO_ADDR="${BAO_ADDR:-http://127.0.0.1:18200}"
+            "$JK/shared/sync-openbao-to-jenkins.sh" --verify
+            ;;
+        put-p12)
+            # direct path (no OpenBao). REST createCredentials is flaky across
+            # plugin versions — use the script console instead (admin-only).
+            local file="${1:?usage: creds put-p12 <dist.p12> <password>}" pass="${2:?missing password}"
+            [[ -f "$file" ]] || err "not a file: $file"
+            local b64 tmpl gen out
+            b64=$(base64 -w0 "$file")
+            tmpl="$JK/ios/agent/put-creds.groovy"
+            [[ -f "$tmpl" ]] || err "missing $tmpl"
+            gen=/tmp/opencode/put-creds.gen.groovy
+            sed -e "s|__PASS__|$pass|" -e "s|__B64__|$b64|" "$tmpl" > "$gen"
+            out=$(jenkins_api POST "/scriptText" --data-urlencode "script=$(cat "$gen")") || true
+            rm -f "$gen"
+            [[ "$out" == *"CREATED"* ]] || err "script console create failed: $out"
+            ok "credentials ios-dummy-p12 + ios-dummy-p12-pass created"
+            ;;
+        *) err "usage: creds sync|verify|put-p12" ;;
+    esac
+}
+
+# ── jobs ─────────────────────────────────────────────────────────────────────
+cmd_job() {
+    _require_cmds curl python3
+    local action="${1:-list}" job="${2:-retrorampage-ios}"
+    case "$action" in
+        list)
+            jenkins_api GET "/api/json?tree=jobs[name]" | python3 -m json.tool
+            ;;
+        create)
+            [[ -f "$JK/ios/job-configs/retrorampage-jenkinsb.xml" ]] || err "job XML missing"
+            log "Creating/updating job '$job'"
+            local code
+            code=$(jenkins_api POST "/createItem?name=$job" \
+                -H "Content-Type: application/xml" \
+                --data-binary "@$JK/ios/job-configs/retrorampage-jenkinsb.xml" \
+                -o /dev/null -w "%{http_code}")
+            case "$code" in
+                200) ok "job '$job' created" ;;
+                400)
+                    # exists → overwrite via config.xml POST
+                    code=$(jenkins_api POST "/job/$job/config.xml" \
+                        -H "Content-Type: application/xml" \
+                        --data-binary "@$JK/ios/job-configs/retrorampage-jenkinsb.xml" \
+                        -o /dev/null -w "%{http_code}")
+                    [[ "$code" == 200 ]] && ok "job '$job' config updated" \
+                        || err "config update → HTTP $code"
+                    ;;
+                *) err "createItem → HTTP $code" ;;
+            esac
+            ;;
+        build)
+            # pass params explicitly — the Jenkinsfile's inline defaults get
+            # re-materialized on every run and don't know this repo's agents;
+            # CONFIG_YAML inlines the config so agent-side fs quirks
+            # (iCloud eviction on the mini) can't empty it
+            local cfgfile="$JK/apps/retrorampage/build-config.yaml"
+            [[ -f "$cfgfile" ]] || err "missing $cfgfile"
+            jenkins_api POST "/job/$job/buildWithParameters" \
+                --data-urlencode "APP_CONFIG=jenkins-k8s/apps/retrorampage/build-config.yaml" \
+                --data-urlencode "AGENT_LABEL=${AGENT_LABEL:-ios-m4}" \
+                --data-urlencode "CONFIG_YAML@${cfgfile}" \
+                && ok "build queued for '$job' (config inlined)" \
+                || err "trigger failed"
+            ;;
+        console)
+            jenkins_api GET "/job/$job/lastBuild/logText/progressiveText?start=0" | tail -40
+            ;;
+        delete)
+            prompt_confirm_word "Delete Jenkins job '$job'?" "$job" || return 1
+            jenkins_api POST "/job/$job/doDelete" && ok "deleted '$job'"
+            ;;
+        *) err "usage: job list|create|build|console|delete [name]" ;;
+    esac
+}
+
+# ── interactive menu ─────────────────────────────────────────────────────────
+_prompt_select() {
+    local title="$1"; shift
+    local i=1 opt
+    echo "$title" >&2
+    for opt in "$@"; do echo "  $i) $opt" >&2; i=$((i+1)); done
+    read -r -p "select [1-$#]: " n </dev/tty || return 1
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n>=1 && n<=$# )) || return 1
+    eval "echo \${$n}"
+}
+
+menu() {
+    while true; do
+        local choice
+        choice=$(_prompt_select "pulse v$(version) — main menu" \
+            "test                    — run artifact test suite" \
+            "validate                — syntax-check all pipeline artifacts" \
+            "casc apply              — apply jenkins-b JCasC configmap" \
+            "deploy apply            — apply jenkins-b deployment" \
+            "jenkins restart         — rollout restart jenkins-b" \
+            "plugins install         — install plugin into jenkins-b PVC" \
+            "agent install           — set up ios-m4 agent on Mac mini" \
+            "sign generate           — dummy signing identity on Mac mini" \
+            "creds sync              — OpenBao → Jenkins credentials" \
+            "job create              — create retrorampage-ios job" \
+            "job build               — trigger retrorampage-ios build" \
+            "job console             — tail last build log" \
+            "quit") || break
+        case "$choice" in
+            test*)          cmd_test ;;
+            validate*)      cmd_validate ;;
+            casc*)          cmd_casc apply ;;
+            deploy*)        cmd_deploy apply ;;
+            jenkins*)       cmd_jenkins restart ;;
+            plugins*)       cmd_plugins install "$(_prompt_input 'plugin name' timestamper)" ;;
+            agent*)         cmd_agent install ios-m4 ;;
+            sign*)          cmd_sign generate ;;
+            creds\ sync*)   cmd_creds sync ;;
+            job\ create*)   cmd_job create retrorampage-ios ;;
+            job\ build*)    cmd_job build retrorampage-ios ;;
+            job\ console*)  cmd_job console retrorampage-ios ;;
+            quit*)          break ;;
+        esac
+    done
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then menu; return; fi
+    local cmd="$1"; shift
+    case "$cmd" in
+        version) version ;;
+        test)        cmd_test "$@" ;;
+        validate)    cmd_validate ;;
+        casc)        cmd_casc "$@" ;;
+        deploy)      cmd_deploy "$@" ;;
+        jenkins)     cmd_jenkins "$@" ;;
+        plugins)     cmd_plugins "$@" ;;
+        node)        cmd_node "$@" ;;
+        agent)       cmd_agent "$@" ;;
+        sign)        cmd_sign "$@" ;;
+        bao)         cmd_bao "$@" ;;
+        creds)       cmd_creds "$@" ;;
+        job)         cmd_job "$@" ;;
+        help|-h)     sed -n '2,25p' "$0" ;;
+        *) err "unknown command: $cmd (try 'scripts/pulse help')" ;;
+    esac
+}
+
+main "$@"

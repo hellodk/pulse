@@ -20,30 +20,56 @@
 
 def readConfig(cfgPath) {
     def cfgJson = "${env.WORKSPACE}/.cfg_${env.BUILD_NUMBER}.json"
+    // controller-agnostic fallbacks: agents on different hosts resolve the
+    // config from (1) the laptop's absolute path, (2) \$HOME clone, (3) the
+    // known Mac mini path, or (4) their OWN controller's userContent
     withEnv(["RC_CFG=${cfgPath}",
              "RC_DEST=${cfgJson}",
              "RC_ABS=/home/dk/Documents/git/pulse/${cfgPath}",
-             "RC_UC=http://100.89.50.27:30881/userContent/shared/${cfgPath}",
-             "RC_PARSER=http://100.89.50.27:30881/userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
+             "RC_HOME=${cfgPath}",
+             "RC_UC=${env.JENKINS_URL ?: 'http://192.168.1.10:30880/'}userContent/shared/${cfgPath}",
+             "RC_PARSER_URL=${env.JENKINS_URL ?: 'http://192.168.1.10:30880/'}userContent/shared/jenkins-k8s/shared/parse-config.py"]) {
         sh '''#!/bin/bash
 set +e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
-if [ -f "${RC_ABS}" ]; then
+# 1) inline config passed as a build parameter — immune to agent-side
+#    filesystem surprises (iCloud evicts files under ~/Documents)
+#    written to a temp file so the normal parse path can run on it
+if [ -n "${CONFIG_YAML:-}" ]; then
+    TMP=$(mktemp /tmp/cfg_XXXXXX)
+    mv "${TMP}" "${TMP}.yaml"
+    printf '%s' "${CONFIG_YAML}" > "${TMP}.yaml"
+    SRC="${TMP}.yaml"
+    echo "[readConfig] from CONFIG_YAML parameter ($(wc -c < "${SRC}") bytes)"
+elif [ -f "${RC_ABS}" ]; then
     echo "[readConfig] absolute: ${RC_ABS}"
     SRC="${RC_ABS}"
+elif [ -n "${HOME}" ] && [ -f "${HOME}/Documents/git/pulse/${RC_HOME}" ]; then
+    echo "[readConfig] home clone: ${HOME}/Documents/git/pulse/${RC_HOME}"
+    SRC="${HOME}/Documents/git/pulse/${RC_HOME}"
+elif [ -f "/Users/dk/Documents/git/pulse/${RC_HOME}" ]; then
+    echo "[readConfig] mac mini clone"
+    SRC="/Users/dk/Documents/git/pulse/${RC_HOME}"
 else
     echo "[readConfig] curl: ${RC_UC}"
-    TMP=$(mktemp /tmp/cfg_XXXXXX.yaml)
+    # Xs MUST terminate the template on macOS or mktemp creates a literal file
+    TMP=$(mktemp /tmp/cfg_XXXXXX)
+    mv "${TMP}" "${TMP}.yaml"
+    TMP="${TMP}.yaml"
     curl -sf --max-time 15 "${RC_UC}" -o "${TMP}" 2>/dev/null
-    if [ -s "${TMP}" ]; then SRC="${TMP}"; else echo '{}' > "${RC_DEST}"; exit 0; fi
+    if [ -s "${TMP}" ]; then SRC="${TMP}"; else rm -f "${TMP}"; echo '{}' > "${RC_DEST}"; exit 0; fi
 fi
 echo "[readConfig] size=$(wc -c < "${SRC}") bytes"
 PARSER_LOCAL="/var/jenkins_home/userContent/shared/jenkins-k8s/shared/parse-config.py"
+PARSER_HOME="${HOME}/Documents/git/pulse/jenkins-k8s/shared/parse-config.py"
+if [ -f "${PARSER_HOME}" ]; then
+    PARSER_LOCAL="${PARSER_HOME}"
+fi
 if [ -f "${PARSER_LOCAL}" ]; then
     python3 "${PARSER_LOCAL}" "${SRC}" > "${RC_DEST}" 2>/dev/null \
       || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
 else
-    curl -sf --max-time 15 "${RC_PARSER}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
+    curl -sf --max-time 15 "${RC_PARSER_URL}" 2>/dev/null | python3 - "${SRC}" > "${RC_DEST}" 2>/dev/null \
       || { echo "[readConfig] parse failed"; echo '{}' > "${RC_DEST}"; }
 fi
 echo "[readConfig] result: $(cat "${RC_DEST}" | head -c 120)"
@@ -162,8 +188,13 @@ pipeline {
         )
         string(
             name: 'AGENT_LABEL',
-            defaultValue: 'ios-agent',
+            defaultValue: 'ios-m4',
             description: 'Jenkins agent label (overrides config file value if set)'
+        )
+        text(
+            name: 'CONFIG_YAML',
+            defaultValue: '',
+            description: 'Full build-config.yaml content; when set it wins over APP_CONFIG file resolution'
         )
         string(name: 'NOTIFY_EMAIL',  defaultValue: 'reject@hellodk.io', description: 'Comma-separated email recipients')
         string(name: 'LLM_ENDPOINT_A', defaultValue: 'http://100.89.50.27:11434', description: 'Primary Ollama endpoint')
@@ -403,10 +434,12 @@ echo "=== Done ==="
                             CURRENT=$(security list-keychains -d user | tr -d '"' | xargs)
                             security list-keychains -d user -s "${KEYCHAIN_NAME}" ${CURRENT}
 
-                            # Read the actual identity CN from the keychain so xcodebuild gets the
-                            # exact string — required for CODE_SIGN_IDENTITY on Xcode 26 manual signing.
-                            IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_NAME}" \
-                                | grep '"' | head -1 | sed 's/.*"\\(.*\\)"/\\1/')
+                            # Resolve the signing identity by SHA-1 hash —
+                            # self-signed dummy CAs are never trusted by the
+                            # system, so `-v` lists zero identities and CN
+                            # extraction fails. A hash works for signing.
+                            IDENTITY=$(security find-identity -p codesigning "${KEYCHAIN_NAME}" \
+                                | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
                             echo "${KEYCHAIN_NAME}" >  /tmp/ios_keychain_${BUILD_NUMBER}.txt
                             echo "${KEYCHAIN_PASS}"  >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
                             echo "${IDENTITY}"        >> /tmp/ios_keychain_${BUILD_NUMBER}.txt
@@ -440,26 +473,10 @@ echo "=== Done ==="
                 dir('app-src') {
                     script {
                         def signFlags = 'CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO'
-                        if (env.SIGN_MODE == 'real') {
-                            def keychainLines = readFile("/tmp/ios_keychain_${BUILD_NUMBER}.txt").trim().split('\n')
-                            def keychainName  = keychainLines[0]
-                            def keychainPass  = keychainLines[1]
-                            def identity      = keychainLines.size() > 2 ? keychainLines[2] : ''
-                            // Xcode 26 / macOS Tahoe requirements:
-                            // 1. CODE_SIGN_IDENTITY must be the exact string from the keychain
-                            // 2. PROVISIONING_PROFILE_SPECIFIER selects which profile to use (manual signing)
-                            // 3. --timestamp=none prevents xcodebuild calling Apple timestamp servers in CI
-                            //    (avoids hangs when signing keys are not from Apple's CA)
-                            // 4. --keychain must be the full path (Tahoe changed resolution order)
-                            def keychainPath = sh(script: "security find-keychain '${keychainName}' | tr -d '\\\"'",
-                                                   returnStdout: true).trim() ?: keychainName
-                            signFlags = """DEVELOPMENT_TEAM="${env.SIGN_TEAM}" \\
-                                CODE_SIGN_STYLE=Manual \\
-                                CODE_SIGN_IDENTITY="${identity}" \\
-                                PROVISIONING_PROFILE_SPECIFIER="${env.SIGN_PROF_ID ?: ''}" \\
-                                PRODUCT_BUNDLE_IDENTIFIER="${env.BUNDLE_ID ?: ''}" \\
-                                OTHER_CODE_SIGN_FLAGS="--keychain '${keychainPath}' --timestamp=none" """
-                        }
+                        // NOTE: xcodebuild archive rejects self-signed/untrusted
+                        // identities outright ("not valid for code signing"), so
+                        // archiving happens UNSIGNED above and the dummy signature
+                        // is applied explicitly right after the archive lands.
 
                         if (env.BUILD_TYPE == 'react-native') {
                             sh """#!/bin/bash
@@ -468,10 +485,21 @@ echo "=== Done ==="
                                 xcodebuild archive \\
                                     -workspace "\${WORKSPACE_XC}" \\
                                     -scheme    "\${SCHEME}" \\
+                                    -destination 'generic/platform=iOS' \\
                                     -configuration "\${CONFIGURATION}" \\
                                     -archivePath "build/\${APP_NAME}.xcarchive" \\
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
+                                if [ "\${SIGN_MODE}" = "real" ]; then
+                                    KCF="/tmp/ios_keychain_\${BUILD_NUMBER}.txt"
+                                    KC=\$(sed -n 1p "\$KCF"); KCP=\$(sed -n 2p "\$KCF"); IDENT=\$(sed -n 3p "\$KCF")
+                                    security unlock-keychain -p "\$KCP" "\$KC" || true
+                                    APP_BUNDLE=\$(find "build/\${APP_NAME}.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+                                    codesign --force --sign "\$IDENT" --keychain "\$KC" --timestamp=none "\$APP_BUNDLE"
+                                    echo "--- codesign verify ---"
+                                    codesign -dv "\$APP_BUNDLE" 2>&1 | head -5
+                                fi
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
@@ -494,10 +522,21 @@ echo "=== Done ==="
                                 xcodebuild archive \\
                                     -project "\$PROJECT" \\
                                     -scheme  "\$SCHEME_AUTO" \\
+                                    -destination 'generic/platform=iOS' \\
                                     -configuration "\${CONFIGURATION}" \\
                                     -archivePath "build/\${APP_NAME}.xcarchive" \\
                                     ${signFlags} \\
                                     2>&1 | grep -E "error:|BUILD|Archive" | tail -30 || true
+                                [ -d "build/\${APP_NAME}.xcarchive" ] || { echo "ARCHIVE FAILED - no xcarchive produced"; exit 1; }
+                                if [ "\${SIGN_MODE}" = "real" ]; then
+                                    KCF="/tmp/ios_keychain_\${BUILD_NUMBER}.txt"
+                                    KC=\$(sed -n 1p "\$KCF"); KCP=\$(sed -n 2p "\$KCF"); IDENT=\$(sed -n 3p "\$KCF")
+                                    security unlock-keychain -p "\$KCP" "\$KC" || true
+                                    APP_BUNDLE=\$(find "build/\${APP_NAME}.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+                                    codesign --force --sign "\$IDENT" --keychain "\$KC" --timestamp=none "\$APP_BUNDLE"
+                                    echo "--- codesign verify ---"
+                                    codesign -dv "\$APP_BUNDLE" 2>&1 | head -5
+                                fi
                                 zip -r "build/\${APP_NAME}-\${GIT_SHA}-\${BUILD_NUMBER}.xcarchive.zip" \\
                                     "build/\${APP_NAME}.xcarchive" || true
                             """
