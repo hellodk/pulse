@@ -1,0 +1,106 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description>Freestyle experiment: codesign /bin/ls copy WITHOUT keychain partition list (issue #4)</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.model.LogRotator">
+        <numToKeep>10</numToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <com.synopsys.arc.jenkins.plugins.ownership.jobs.JobOwnerJobProperty>
+      <enabled>false</enabled>
+    </com.synopsys.arc.jenkins.plugins.ownership.jobs.JobOwnerJobProperty>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <assignedNode>ios-m4</assignedNode>
+  <canRoam>false</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>
+#!/bin/bash
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+VARIANT="NOPARTITION"
+echo "=== codesign freestyle experiment: $VARIANT ==="
+
+KC="codesign-freestyle-${BUILD_NUMBER}-${VARIANT}"
+rm -f ./ls-binary-test
+
+security delete-keychain "$KC" 2>/dev/null || true
+if ! security create-keychain -p "$P12_PASS" "$KC"; then
+    echo "FAIL: create-keychain"; exit 2
+fi
+security unlock-keychain -p "$P12_PASS" "$KC"
+if ! security import "$P12_FILE" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -f pkcs12; then
+    echo "FAIL: p12 import"; exit 2
+fi
+
+# codesign resolves identities via the user search list; --keychain alone is not enough
+security list-keychains -d user -s "$KC" ~/Library/Keychains/login.keychain-db
+
+echo "--- skipping set-key-partition-list (experiment variable) ---"
+
+IDENT=$(security find-identity -p codesigning "$KC" | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
+echo "identity hash: ${IDENT:-NONE}"
+[ -n "$IDENT" ] || { echo "FAIL: no identity in keychain"; security delete-keychain "$KC"; exit 2; }
+
+cp /bin/ls ./ls-binary-test
+
+RC_SIGN=99
+echo "--- codesign attempt (300s watchdog in case of securityd GUI-prompt hang) ---"
+codesign --force --sign "$IDENT" --keychain "$KC" --timestamp=none ./ls-binary-test > codesign-output.txt 2>&amp;1 &amp;
+CODESIGN_PID=$!
+( sleep 300; kill -9 "$CODESIGN_PID" 2>/dev/null ) &amp;
+WATCHDOG_PID=$!
+wait "$CODESIGN_PID"
+RC_SIGN=$?
+kill "$WATCHDOG_PID" 2>/dev/null
+echo "codesign rc=$RC_SIGN (124/137 = killed by watchdog)"
+
+RC_VERIFY=99
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "--- verify ---"
+    codesign -dv ./ls-binary-test 2>&amp;1 | head -6
+    RC_VERIFY=0
+else
+    echo "verify skipped (sign failed)"
+fi
+
+security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
+security delete-keychain "$KC" 2>/dev/null || true
+rm -f ./ls-binary-test
+
+echo ""
+echo "================ RESULT ================"
+echo "variant=$VARIANT codesign_rc=$RC_SIGN verify_rc=$RC_VERIFY"
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "VERDICT: SIGNING SUCCEEDED"
+else
+    echo "VERDICT: SIGNING FAILED (expected for this variant if partition list is required)"
+fi
+      </command>
+    </hudson.tasks.Shell>
+  </builders>
+  <buildWrappers>
+    <org.jenkinsci.plugins.credentialsbinding.impl.SecretBuildWrapper plugin="credentials-binding">
+      <bindings>
+        <org.jenkinsci.plugins.credentialsbinding.impl.FileBinding>
+          <credentialsId>ios-dummy-p12</credentialsId>
+          <variable>P12_FILE</variable>
+        </org.jenkinsci.plugins.credentialsbinding.impl.FileBinding>
+        <org.jenkinsci.plugins.credentialsbinding.impl.StringBinding>
+          <credentialsId>ios-dummy-p12-pass</credentialsId>
+          <variable>P12_PASS</variable>
+        </org.jenkinsci.plugins.credentialsbinding.impl.StringBinding>
+      </bindings>
+    </org.jenkinsci.plugins.credentialsbinding.impl.SecretBuildWrapper>
+  </buildWrappers>
+</project>

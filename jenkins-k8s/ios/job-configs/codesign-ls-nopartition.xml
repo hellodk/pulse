@@ -35,6 +35,9 @@ if ! security import "$P12_FILE" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -f
     echo "FAIL: p12 import"; exit 2
 fi
 
+# codesign resolves identities via the user search list; --keychain alone is not enough
+security list-keychains -d user -s "$KC" ~/Library/Keychains/login.keychain-db
+
 echo "--- skipping set-key-partition-list (experiment variable) ---"
 
 IDENT=$(security find-identity -p codesigning "$KC" | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
@@ -58,6 +61,7 @@ else
     echo "verify skipped (sign failed)"
 fi
 
+security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
 security delete-keychain "$KC" 2>/dev/null || true
 rm -f ./ls-binary-test
 

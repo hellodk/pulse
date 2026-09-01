@@ -35,6 +35,9 @@ if ! security import "$P12_FILE" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -f
     echo "FAIL: p12 import"; exit 2
 fi
 
+# codesign resolves identities via the user search list; --keychain alone is not enough
+security list-keychains -d user -s "$KC" ~/Library/Keychains/login.keychain-db
+
 echo "--- applying set-key-partition-list ---"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$P12_PASS" "$KC" > /dev/null 2>&1
 echo "partition list applied"
@@ -60,6 +63,7 @@ else
     echo "verify skipped (sign failed)"
 fi
 
+security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
 security delete-keychain "$KC" 2>/dev/null || true
 rm -f ./ls-binary-test
 
