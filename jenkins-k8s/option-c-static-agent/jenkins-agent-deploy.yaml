@@ -76,25 +76,20 @@ spec:
         persistentVolumeClaim:
           claimName: gradle-cache
       - name: git-repo
-        hostPath:
-          path: /home/dk/Documents/git/pulse
-          type: Directory
+        persistentVolumeClaim:
+          claimName: pulse-repo
       - name: sunflower
-        hostPath:
-          path: /home/dk/Documents/git/sunflower
-          type: Directory
+        persistentVolumeClaim:
+          claimName: sunflower-repo
       - name: gitconfig
         configMap:
           name: gitconfig-safe
       - name: sdk-platforms
-        hostPath:
-          path: /home/dk/android-sdk-extra/platforms
-          type: Directory
+        persistentVolumeClaim:
+          claimName: android-sdk-platforms
       - name: sdk-build-tools
-        hostPath:
-          path: /home/dk/android-sdk-extra/build-tools
-          type: Directory
+        persistentVolumeClaim:
+          claimName: android-sdk-build-tools
       - name: sdk-platform-tools
-        hostPath:
-          path: /home/dk/android-sdk-extra/platform-tools
-          type: Directory
+        persistentVolumeClaim:
+          claimName: android-sdk-platform-tools
