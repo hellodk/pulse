@@ -1,0 +1,186 @@
+#!/bin/bash
+# ==========================================================================
+# codesign-err.sh
+#
+# Signs a copy of /bin/ls using a dummy identity in an ephemeral keychain.
+# Deliberately OMITS set-key-partition-list, so codesign is not in the
+# key's partition list. This causes either errSecInternalComponent (rc=1,
+# instant) or an indefinite hang depending on whether the agent process
+# can reach a GUI consent prompt.
+#
+# A 300-second watchdog kills codesign if it hangs, so the build does not
+# wedge the agent executor forever.
+#
+# Expected outcome: SIGNING FAILED
+#   - either errSecInternalComponent (rc=1) within ~0.3s, or
+#   - killed by watchdog (rc=137) after 300s
+# ==========================================================================
+set -euo pipefail
+
+# ── Hardcoded variables ──────────────────────────────────────────────────
+# KC_PASS: password for the ephemeral keychain AND the p12 file.
+#          Using the same value for both simplifies the experiment.
+KC_PASS="DummyCertPass123!"
+
+# KC: name of the ephemeral keychain. Uses BUILD_NUMBER so successive
+#     runs don't collide. Format: codesign-err-<job-number>
+KC="codesign-err-${BUILD_NUMBER}"
+
+# VARIANT: tag for logging — identifies this as the "no partition" run.
+VARIANT="ERR_NO_PARTITION"
+
+# TARGET: the binary we will sign. We copy /bin/ls into the workspace
+#         so we never modify the system binary.
+TARGET="./ls-binary-test"
+
+# WATCHDOG_TIMEOUT: seconds before we forcibly kill a hanging codesign.
+# 300s = 5 minutes. The pipeline experiment used a 15-min Jenkins timeout;
+# this is tighter because a hanging codesign holds the agent executor.
+WATCHDOG_TIMEOUT=300
+
+# SIGNING_HASH: the SHA-1 hash of the dummy identity in the p12.
+#               Deterministic because the dummy key is always the same.
+SIGNING_HASH="6F4C905D4FCB00319A82096A1683B33C902E65E9"
+
+# PATH: ensure homebrew and standard bin dirs are available on the Mac.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+# ── Step 1: Create an ephemeral keychain ─────────────────────────────────
+# Each build gets its own keychain so there is zero state leakage between
+# runs. The password is set to KC_PASS above.
+# "security create-keychain" creates the file at ~/Library/Keychains/<KC>.
+# If it already exists from a previous failed cleanup, delete it first.
+echo "=== codesign experiment: $VARIANT ==="
+security delete-keychain "$KC" 2>/dev/null || true
+if ! security create-keychain -p "$KC_PASS" "$KC"; then
+    echo "FAIL: create-keychain"; exit 2
+fi
+
+# ── Step 2: Unlock the keychain ──────────────────────────────────────────
+# New keychains start locked. Unlocking is required before any import or
+# key access. Without this, the import in step 3 would fail.
+security unlock-keychain -p "$KC_PASS" "$KC"
+
+# ── Step 3: Import the dummy .p12 into the keychain ──────────────────────
+# P12_FILE and P12_PASS are injected by Jenkins SecretBuildWrapper
+# (credentials binding). The -T flag adds codesign to the key's Access
+# Control List so it can use the key. -f pkcs12 forces the format.
+# SECURITY WARNING: P12_FILE and P12_PASS are env vars set by Jenkins
+# credentials binding — they are never printed or logged.
+if ! security import "$P12_FILE" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -f pkcs12; then
+    echo "FAIL: p12 import"; exit 2
+fi
+
+# ── Step 4: Register keychain in the user search list ────────────────────
+# codesign resolves identities by walking the user keychain search list.
+# Passing --keychain to codesign alone is NOT enough — the keychain MUST
+# appear in the search list. login.keychain-db is appended so we don't
+# break anything if codesign falls back to it.
+security list-keychains -d user -s "$KC" ~/Library/Keychains/login.keychain-db
+
+# ── Step 5: SKIP set-key-partition-list (the experiment variable) ────────
+# THIS IS THE CRITICAL DIFFERENCE between codesign-err and codesign-fixed.
+# We deliberately do NOT call "security set-key-partition-list" here.
+# Without it, codesign is NOT in the key's partition list.
+#
+# When codesign tries to use the key:
+#   - If the agent has NO GUI session: securityd returns
+#     errSecInternalComponent immediately (rc=1, ~0.3s).
+#   - If the agent CAN reach a WindowServer session: securityd tries to
+#     present a GUI consent prompt that can never be answered → indefinite
+#     hang until an external kill.
+echo "--- skipping set-key-partition-list (experiment variable) ---"
+
+# ── Step 6: Verify the identity exists in the keychain ───────────────────
+# security find-identity lists identities matching the codesigning policy.
+# We extract the SHA-1 hash (second field) of the first result. If no
+# identity is found, the build fails immediately.
+IDENT=$(security find-identity -p codesigning "$KC" | awk '/^[[:space:]]*[0-9]+[)]/{print $2; exit}')
+echo "identity hash: ${IDENT:-NONE}"
+if [ -z "$IDENT" ]; then
+    echo "FAIL: no identity in keychain"
+    security delete-keychain "$KC"
+    exit 2
+fi
+
+# ── Step 7: Copy /bin/ls into the workspace as a signable target ─────────
+# We never sign the real /bin/ls. The copy is our disposable target.
+rm -f "$TARGET"
+cp /bin/ls "$TARGET"
+
+# ── Step 8: Run codesign with a 300s watchdog ────────────────────────────
+# --force: overwrite any existing signature on the binary.
+# --sign "$IDENT": sign with the given SHA-1 identity hash.
+# --keychain "$KC": use only our ephemeral keychain (not the search list).
+# --timestamp=none: skip timestamping (avoids contacting Apple's server).
+#
+# We run codesign in the background, then spawn a watchdog that kills it
+# after WATCHDOG_TIMEOUT seconds. This prevents the build from hanging
+# the agent executor indefinitely if codesign blocks on a GUI consent
+# prompt that can never appear.
+#
+# Exit codes to watch for:
+#   0    = signing succeeded (unexpected for this variant)
+#   1    = errSecInternalComponent or other signing error
+#   124  = killed by "timeout" command (not used here, but possible)
+#   137  = killed by SIGKILL from our watchdog (hang → forced kill)
+RC_SIGN=99
+echo "--- codesign attempt (${WATCHDOG_TIMEOUT}s watchdog in case of securityd GUI-prompt hang) ---"
+
+# Launch codesign in the background. Its PID is saved for the watchdog.
+codesign --force --sign "$IDENT" --keychain "$KC" --timestamp=none "$TARGET" > codesign-output.txt 2>&1 &
+CODESIGN_PID=$!
+
+# Launch a background subshell that sleeps for WATCHDOG_TIMEOUT seconds
+# and then sends SIGKILL to codesign. This is the hang-guarantee:
+# even if codesign blocks forever, the build will complete in ~5 min.
+( sleep "$WATCHDOG_TIMEOUT"; kill -9 "$CODESIGN_PID" 2>/dev/null ) &
+WATCHDOG_PID=$!
+
+# Wait for codesign to finish (either naturally or by being killed).
+# $? will be:
+#   0  if codesign completed successfully (unlikely for this variant)
+#   1  if codesign returned an error (errSecInternalComponent)
+#   137 if codesign was killed by our SIGKILL watchdog
+wait "$CODESIGN_PID"
+RC_SIGN=$?
+
+# Cancel the watchdog timer (codesign already finished, no need to kill it).
+kill "$WATCHDOG_PID" 2>/dev/null
+
+echo "codesign rc=$RC_SIGN (124/137 = killed by watchdog)"
+
+# ── Step 9: Verify the signature (only if sign succeeded) ────────────────
+# In practice this block never executes for this variant — codesign either
+# errors (rc=1) or is killed by the watchdog (rc=137). The verify step is
+# here for structural completeness and to match codesign-fixed.sh.
+RC_VERIFY=99
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "--- verify ---"
+    codesign -dv "$TARGET" 2>&1 | head -6
+    RC_VERIFY=0
+else
+    echo "verify skipped (sign failed with rc=$RC_SIGN)"
+fi
+
+# ── Step 10: Cleanup — restore search list and delete ephemeral keychain ─
+# Always clean up: restore the original keychain search list, delete
+# the ephemeral keychain, and remove the test binary. This prevents
+# keychain pollution of subsequent builds.
+security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
+security delete-keychain "$KC" 2>/dev/null || true
+rm -f "$TARGET"
+
+# ── Final result ─────────────────────────────────────────────────────────
+echo ""
+echo "================ RESULT ================"
+echo "variant=$VARIANT codesign_rc=$RC_SIGN verify_rc=$RC_VERIFY"
+if [ "$RC_SIGN" -eq 0 ]; then
+    echo "VERDICT: SIGNING SUCCEEDED (unexpected for this variant)"
+elif [ "$RC_SIGN" -eq 137 ]; then
+    echo "VERDICT: SIGNING FAILED — codesign was hung and killed by watchdog (rc=137)"
+elif [ "$RC_SIGN" -eq 1 ]; then
+    echo "VERDICT: SIGNING FAILED — errSecInternalComponent (rc=1)"
+else
+    echo "VERDICT: SIGNING FAILED — unexpected rc=$RC_SIGN"
+fi
