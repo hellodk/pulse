@@ -32,15 +32,18 @@ spec:
               echo "=== Disk before cleanup ==="
               df -h /host-root/ | tail -1
 
-              # Remove dangling container images via crictl if available
+              # Image GC — ONLY via crictl, which respects containerd's metadata DB.
+              # NEVER rm -rf the overlayfs snapshots dir directly: it deletes layer
+              # dirs that running images still reference, desyncing them from
+              # io.containerd.metadata.v1.bolt. After a reboot containerd then fails
+              # with "failed to stat parent: snapshots/<id>/fs: no such file or
+              # directory" and kube-proxy/CNI cannot start (whole-cluster outage).
               if nsenter -t 1 -m -u -i -n -- which crictl > /dev/null 2>&1; then
-                echo "Pruning unused container images..."
+                echo "Pruning unused container images via crictl..."
                 nsenter -t 1 -m -u -i -n -- crictl rmi --prune 2>/dev/null && echo "crictl prune done" || true
+              else
+                echo "crictl not found — skipping image GC (do NOT rm snapshot dirs manually)"
               fi
-
-              # Clean k0s image cache older than 7 days
-              find /host-root/var/lib/k0s/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots \
-                -maxdepth 1 -type d -mtime +7 2>/dev/null | head -20 | xargs -r rm -rf || true
 
               # Clean up old Jenkins build workspace dirs > 3 days old
               find /host-root/home/jenkins/agent/workspace \

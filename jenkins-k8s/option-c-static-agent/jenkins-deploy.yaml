@@ -96,9 +96,8 @@ spec:
         configMap:
           name: jenkins-email-templates
       - name: git-repo
-        hostPath:
-          path: /home/dk/Documents/git/pulse
-          type: Directory
+        persistentVolumeClaim:
+          claimName: pulse-repo
 ---
 apiVersion: v1
 kind: Service
